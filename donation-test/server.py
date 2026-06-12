@@ -25,8 +25,10 @@ from chzzk_api import (
     ChzzkApiError,
     build_auth_url,
     exchange_code,
+    list_user_sessions_sync,
     new_oauth_state,
     refresh_access_token,
+    revoke_token_sync,
 )
 from donation_listener import DonationListener
 from donation_store import DonationStore
@@ -334,6 +336,47 @@ async def restart_listener() -> dict[str, str]:
     donation_store.start_worker()
     listener.start()
     return {"message": "listener and queue worker restarted"}
+
+
+@app.post("/auth/reset")
+async def auth_reset() -> dict[str, Any]:
+    """로컬 토큰·OAuth state 삭제 + (가능하면) 치지직 토큰 revoke."""
+    listener.stop()
+    tokens = _get_tokens()
+    revoked = False
+    revoke_error: str | None = None
+    sessions_before: Any = None
+
+    if tokens and tokens.get("access_token") and CLIENT_ID and CLIENT_SECRET:
+        try:
+            sessions_before = list_user_sessions_sync(tokens["access_token"])
+        except Exception as exc:
+            logger.warning("세션 목록 조회 실패: %s", exc)
+        try:
+            revoke_token_sync(
+                CLIENT_ID,
+                CLIENT_SECRET,
+                tokens["access_token"],
+            )
+            revoked = True
+        except Exception as exc:
+            revoke_error = str(exc)
+            logger.warning("토큰 revoke 실패: %s", exc)
+
+    _tokens.clear()
+    for path in (TOKEN_FILE, STATE_FILE):
+        if path.exists():
+            path.unlink()
+
+    oauth_states.clear()
+    listener.start()
+
+    return {
+        "message": "로컬 OAuth/세션 state 초기화 완료. /auth/chzzk 로 다시 로그인하세요.",
+        "token_revoked": revoked,
+        "revoke_error": revoke_error,
+        "sessions_before_reset": sessions_before,
+    }
 
 
 def main() -> None:

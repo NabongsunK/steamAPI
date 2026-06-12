@@ -129,3 +129,34 @@ def subscribe_donation_sync(access_token: str, session_key: str) -> Any:
         )
         resp.raise_for_status()
         return _unwrap(resp.json())
+
+
+def revoke_token_sync(client_id: str, client_secret: str, token: str) -> None:
+    body = {
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "token": token,
+        "tokenTypeHint": "access_token",
+    }
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(f"{API_BASE}/auth/v1/token/revoke", json=body)
+        resp.raise_for_status()
+        if resp.content:
+            payload = resp.json()
+            if isinstance(payload, dict) and "code" in payload:
+                _unwrap(payload)
+
+
+def list_user_sessions_sync(access_token: str, size: int = 20) -> Any:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(
+            f"{API_BASE}/open/v1/sessions",
+            headers=headers,
+            params={"size": size, "page": "0"},
+        )
+        resp.raise_for_status()
+        return _unwrap(resp.json())
