@@ -83,12 +83,16 @@ async def refresh_access_token(
 
 
 async def get_session_url(access_token: str) -> str:
+    return get_session_url_sync(access_token)
+
+
+def get_session_url_sync(access_token: str) -> str:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(f"{API_BASE}/open/v1/sessions/auth", headers=headers)
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(f"{API_BASE}/open/v1/sessions/auth", headers=headers)
         resp.raise_for_status()
         content = _unwrap(resp.json())
         url = content.get("url")

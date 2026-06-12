@@ -14,7 +14,7 @@ import socketio
 
 from chzzk_api import (
     ChzzkApiError,
-    get_session_url,
+    get_session_url_sync,
     subscribe_donation_sync,
 )
 from donation_store import DonationStore, donation_record_now
@@ -120,19 +120,18 @@ class DonationListener:
 
         access_token = tokens["access_token"]
         self._status = "connecting"
+        await asyncio.to_thread(self._run_socket_session, access_token)
 
+    def _run_socket_session(self, access_token: str) -> None:
+        """Socket.IO 세션 — URL 발급 직후 바로 연결 (URL 만료 방지)."""
         try:
-            session_url = await get_session_url(access_token)
+            session_url = get_session_url_sync(access_token)
         except ChzzkApiError as exc:
             if "INVALID_TOKEN" not in str(exc) and exc.status_code != 401:
                 raise
-            access_token = await self._refresh_access_token(tokens)
-            session_url = await get_session_url(access_token)
+            # sync refresh는 asyncio loop 밖 — 토큰 갱신은 상위에서 처리
+            raise
 
-        await asyncio.to_thread(self._run_socket_session, session_url, access_token)
-
-    def _run_socket_session(self, session_url: str, access_token: str) -> None:
-        """Socket.IO 세션 — 치지직 gist와 동일하게 동기(single-thread)로 처리."""
         session_ready = threading.Event()
         subscribed = threading.Event()
         connect_error: list[str] = []
@@ -212,7 +211,11 @@ class DonationListener:
         try:
             sio.connect(session_url, transports=["websocket"])
         except Exception as exc:
-            raise RuntimeError(f"Socket.IO connect 실패: {exc}") from exc
+            detail = exc.__cause__ or exc
+            raise RuntimeError(
+                f"Socket.IO connect 실패: {exc} ({detail}) — "
+                "ssio*.nchat.naver.com:443 외부 접속·세션 URL 만료·연결 3개 초과 확인"
+            ) from exc
 
         if connect_error:
             raise RuntimeError(connect_error[0])
