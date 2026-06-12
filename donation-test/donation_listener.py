@@ -15,8 +15,10 @@ import socketio
 from chzzk_api import (
     ChzzkApiError,
     get_session_url_sync,
+    list_user_sessions_sync,
     subscribe_donation_sync,
 )
+from chzzk_ws import build_engineio_ws_url, normalize_payload, probe_raw_websocket
 from donation_store import DonationStore, donation_record_now
 
 logger = logging.getLogger(__name__)
@@ -108,8 +110,8 @@ class DonationListener:
             except Exception as exc:
                 self._last_error = str(exc)
                 self._status = "error"
-                logger.exception("연결 오류, 10초 후 재시도: %s", exc)
-                await asyncio.sleep(10)
+                logger.exception("연결 오류, 30초 후 재시도: %s", exc)
+                await asyncio.sleep(30)
 
     async def _connect_once(self) -> None:
         tokens = self.get_tokens()
@@ -124,12 +126,17 @@ class DonationListener:
 
     def _run_socket_session(self, access_token: str) -> None:
         """Socket.IO 세션 — URL 발급 직후 바로 연결 (URL 만료 방지)."""
+        active = self._count_active_sessions(access_token)
+        if active >= 3:
+            raise RuntimeError(
+                f"활성 WebSocket 세션이 {active}개(최대 3) — server 중지 후 1~2분 대기"
+            )
+
         try:
             session_url = get_session_url_sync(access_token)
         except ChzzkApiError as exc:
             if "INVALID_TOKEN" not in str(exc) and exc.status_code != 401:
                 raise
-            # sync refresh는 asyncio loop 밖 — 토큰 갱신은 상위에서 처리
             raise
 
         session_ready = threading.Event()
@@ -159,7 +166,7 @@ class DonationListener:
 
         @sio.on("SYSTEM")
         def on_system(data: Any) -> None:
-            payload = _normalize_payload(data)
+            payload = normalize_payload(data)
             logger.info("SYSTEM: %s", json.dumps(payload, ensure_ascii=False))
             msg_type = payload.get("type")
             if msg_type == "connected":
@@ -185,7 +192,7 @@ class DonationListener:
 
         @sio.on("DONATION")
         def on_donation(data: Any) -> None:
-            payload = _normalize_payload(data)
+            payload = normalize_payload(data)
             event = DonationEvent(
                 received_at=datetime.now(timezone.utc).isoformat(),
                 donator_nickname=str(payload.get("donatorNickname", "")),
@@ -208,13 +215,16 @@ class DonationListener:
                 self.on_donation(event)
 
         logger.info("Session WS 연결 시도: %s...", session_url[:60])
+        logger.debug("Engine.IO URL: %s", build_engineio_ws_url(session_url)[:120])
         try:
             sio.connect(session_url, transports=["websocket"])
         except Exception as exc:
+            raw_ok, raw_err, _ = probe_raw_websocket(session_url)
             detail = exc.__cause__ or exc
+            hint = raw_err if not raw_ok else str(detail)
             raise RuntimeError(
-                f"Socket.IO connect 실패: {exc} ({detail}) — "
-                "ssio*.nchat.naver.com:443 외부 접속·세션 URL 만료·연결 3개 초과 확인"
+                f"Socket.IO connect 실패: {exc} — {hint} "
+                "(ssio*.nchat.naver.com:443·세션 3개 초과·URL 만료 확인)"
             ) from exc
 
         if connect_error:
@@ -260,16 +270,12 @@ class DonationListener:
         self.save_tokens(tokens)
         return tokens["access_token"]
 
-
-def _normalize_payload(data: Any) -> dict[str, Any]:
-    if isinstance(data, dict):
-        return data
-    if isinstance(data, (list, tuple)) and data:
-        first = data[0]
-        if isinstance(first, dict):
-            return first
-        if isinstance(first, str):
-            return json.loads(first)
-    if isinstance(data, str):
-        return json.loads(data)
-    return {"value": data}
+    @staticmethod
+    def _count_active_sessions(access_token: str) -> int:
+        try:
+            payload = list_user_sessions_sync(access_token, size=20)
+            rows = (payload or {}).get("data") or []
+            return sum(1 for row in rows if not row.get("disconnectedDate"))
+        except ChzzkApiError as exc:
+            logger.warning("세션 목록 조회 실패: %s", exc)
+            return 0
