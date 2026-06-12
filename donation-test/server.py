@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -46,11 +47,56 @@ TOKEN_FILE = Path(os.getenv("TOKEN_FILE", "data/tokens.json"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SQLITE_PATH = Path(os.getenv("SQLITE_PATH", "data/donations.db"))
 DONATION_LIST_LIMIT = int(os.getenv("DONATION_LIST_LIMIT", "50"))
+STATE_FILE = Path(os.getenv("OAUTH_STATE_FILE", "data/oauth_states.json"))
+STATE_TTL_SEC = int(os.getenv("OAUTH_STATE_TTL_SEC", "600"))
 
 oauth_states: set[str] = set()
 _tokens: dict[str, Any] = {}
 
 app = FastAPI(title="Chzzk Donation Test Server")
+
+EXPECTED_CALLBACK_SUFFIX = "/auth/chzzk/callback"
+
+
+def _load_oauth_states() -> dict[str, float]:
+    if not STATE_FILE.exists():
+        return {}
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return {k: float(v) for k, v in data.items()}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+def _save_oauth_states(states: dict[str, float]) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(states, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _prune_oauth_states(states: dict[str, float]) -> dict[str, float]:
+    now = time.time()
+    return {k: v for k, v in states.items() if now - v <= STATE_TTL_SEC}
+
+
+def _register_oauth_state(state: str) -> None:
+    oauth_states.add(state)
+    states = _prune_oauth_states(_load_oauth_states())
+    states[state] = time.time()
+    _save_oauth_states(states)
+
+
+def _consume_oauth_state(state: str) -> bool:
+    states = _prune_oauth_states(_load_oauth_states())
+    if state not in states and state not in oauth_states:
+        return False
+    states.pop(state, None)
+    oauth_states.discard(state)
+    _save_oauth_states(states)
+    return True
+
+
+def _redirect_uri_ok() -> bool:
+    return REDIRECT_URI.rstrip("/").endswith(EXPECTED_CALLBACK_SUFFIX)
 
 
 def _load_tokens() -> dict[str, Any] | None:
@@ -93,6 +139,12 @@ listener = DonationListener(
 @app.on_event("startup")
 async def startup() -> None:
     _get_tokens()
+    if not _redirect_uri_ok():
+        logger.warning(
+            "CHZZK_REDIRECT_URI가 콜백 경로와 다릅니다. "
+            "예: https://wwmw.shop/auth/chzzk/callback (현재: %s)",
+            REDIRECT_URI,
+        )
     try:
         donation_store.queue.ping()
         donation_store.start_worker()
@@ -103,63 +155,36 @@ async def startup() -> None:
     logger.info("후원 리스너 백그라운드 시작")
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    tokens = _get_tokens()
-    has_token = bool(tokens and tokens.get("access_token"))
-    return f"""
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <title>치지직 후원 테스트</title>
-  <style>
-    body {{ font-family: sans-serif; max-width: 720px; margin: 2rem auto; line-height: 1.6; }}
-    code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }}
-    .ok {{ color: #0a7; }} .warn {{ color: #c80; }}
-  </style>
-</head>
-<body>
-  <h1>치지직 후원 API 테스트</h1>
-  <p>상태: <strong>{listener.status}</strong></p>
-  <p>OAuth: <span class="{'ok' if has_token else 'warn'}">{'연결됨' if has_token else '미연결'}</span></p>
-  <ol>
-    <li>치지직 앱에 Redirect URI 등록: <code>{REDIRECT_URI}</code></li>
-    <li>Scope에 <strong>후원 조회</strong> 체크</li>
-    <li><a href="/auth/chzzk">치지직 로그인 (OAuth)</a></li>
-    <li>본인 채널에 후원 테스트</li>
-  </ol>
-  <p><a href="/status">/status</a> · <a href="/donations">/donations</a> · <a href="/donations/recent">/donations/recent</a></p>
-</body>
-</html>
-"""
-
-
-@app.get("/auth/chzzk")
-async def auth_chzzk() -> RedirectResponse:
-    if not CLIENT_ID or not CLIENT_SECRET:
-        raise HTTPException(500, "CHZZK_CLIENT_ID / CHZZK_CLIENT_SECRET 을 .env 에 설정하세요.")
-
-    state = new_oauth_state()
-    oauth_states.add(state)
-    url = build_auth_url(CLIENT_ID, REDIRECT_URI, state)
-    return RedirectResponse(url)
-
-
-@app.get("/auth/chzzk/callback")
-async def auth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+async def _handle_oauth_callback(
+    code: str | None,
+    state: str | None,
+    error: str | None,
+) -> RedirectResponse:
     if error:
+        logger.error("OAuth provider error: %s", error)
         raise HTTPException(400, f"OAuth 실패: {error}")
     if not code or not state:
-        raise HTTPException(400, "code 또는 state 가 없습니다.")
-    if state not in oauth_states:
-        raise HTTPException(400, "state 불일치 — /auth/chzzk 부터 다시 시작하세요.")
-    oauth_states.discard(state)
+        logger.error("OAuth callback missing code/state (redirect_uri=%s)", REDIRECT_URI)
+        raise HTTPException(
+            400,
+            f"code 또는 state 가 없습니다. CHZZK_REDIRECT_URI가 "
+            f"'{REDIRECT_URI}' 인지, 치지직 콘솔과 동일한지 확인하세요.",
+        )
+    if not _consume_oauth_state(state):
+        logger.error("OAuth state mismatch (redirect_uri=%s)", REDIRECT_URI)
+        raise HTTPException(
+            400,
+            "state 불일치 — /auth/chzzk 부터 다시 시작하세요. (서버 재시작 직후면 다시 로그인)",
+        )
 
     try:
         token_data = await exchange_code(CLIENT_ID, CLIENT_SECRET, code, state)
     except ChzzkApiError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        logger.error("Token exchange failed: %s payload=%s", exc, exc.payload)
+        raise HTTPException(
+            400,
+            f"토큰 발급 실패: {exc}. Redirect URI가 콘솔·.env와 동일한지 확인하세요. (현재: {REDIRECT_URI})",
+        ) from exc
 
     _save_tokens(
         {
@@ -174,6 +199,78 @@ async def auth_callback(code: str | None = None, state: str | None = None, error
     return RedirectResponse("/?oauth=ok")
 
 
+def _index_html(has_token: bool, redirect_ok: bool, oauth_msg: str = "") -> str:
+    oauth_banner = ""
+    if oauth_msg == "ok":
+        oauth_banner = '<p class="ok"><strong>OAuth 연결 완료!</strong></p>'
+    return f"""
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>치지직 후원 테스트</title>
+  <style>
+    body {{ font-family: sans-serif; max-width: 720px; margin: 2rem auto; line-height: 1.6; }}
+    code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }}
+    .ok {{ color: #0a7; }} .warn {{ color: #c80; }}
+  </style>
+</head>
+<body>
+  <h1>치지직 후원 API 테스트</h1>
+  {oauth_banner}
+  <p>상태: <strong>{listener.status}</strong></p>
+  <p>OAuth: <span class="{'ok' if has_token else 'warn'}">{'연결됨' if has_token else '미연결'}</span></p>
+  <p>Redirect URI: <code>{REDIRECT_URI}</code>
+    <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '경로 확인 필요 (/auth/chzzk/callback)'}</span></p>
+  <ol>
+    <li>치지직 앱 로그인 리디렉션 URL = 위 Redirect URI와 <strong>완전 동일</strong></li>
+    <li>Scope에 <strong>후원 조회</strong> 체크</li>
+    <li><a href="/auth/chzzk">치지직 로그인 (OAuth)</a></li>
+    <li>본인 채널에 후원 테스트</li>
+  </ol>
+  <p><a href="/status">/status</a> · <a href="/donations">/donations</a> · <a href="/donations/recent">/donations/recent</a></p>
+</body>
+</html>
+"""
+
+
+@app.get("/")
+async def index(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    oauth: str | None = None,
+):
+    # 치지직 콘솔 Redirect URI가 루트(/)인 경우: /?code=...&state=... 로 돌아옴
+    if code and state:
+        logger.info("OAuth callback on / (redirect_uri=%s)", REDIRECT_URI)
+        return await _handle_oauth_callback(code, state, error)
+    if error:
+        raise HTTPException(400, f"OAuth 실패: {error}")
+
+    tokens = _get_tokens()
+    has_token = bool(tokens and tokens.get("access_token"))
+    redirect_ok = _redirect_uri_ok()
+    return HTMLResponse(_index_html(has_token, redirect_ok, oauth or ""))
+
+
+@app.get("/auth/chzzk")
+async def auth_chzzk() -> RedirectResponse:
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise HTTPException(500, "CHZZK_CLIENT_ID / CHZZK_CLIENT_SECRET 을 .env 에 설정하세요.")
+
+    state = new_oauth_state()
+    _register_oauth_state(state)
+    url = build_auth_url(CLIENT_ID, REDIRECT_URI, state)
+    logger.info("OAuth 시작 redirect_uri=%s", REDIRECT_URI)
+    return RedirectResponse(url)
+
+
+@app.get("/auth/chzzk/callback")
+async def auth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    return await _handle_oauth_callback(code, state, error)
+
+
 @app.get("/status")
 async def status() -> dict[str, Any]:
     tokens = _get_tokens()
@@ -184,6 +281,8 @@ async def status() -> dict[str, Any]:
         "last_error": listener.last_error,
         "has_access_token": bool(tokens and tokens.get("access_token")),
         "redirect_uri": REDIRECT_URI,
+        "redirect_uri_ok": _redirect_uri_ok(),
+        "expected_redirect_uri_suffix": EXPECTED_CALLBACK_SUFFIX,
         "storage": storage,
     }
 

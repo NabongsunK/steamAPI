@@ -191,11 +191,13 @@ class DonationListener:
                 self.on_donation(event)
 
         try:
-            await asyncio.to_thread(
-                sio.connect,
-                session_url,
-                transports=["websocket"],
-                wait_timeout=10,
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    sio.connect,
+                    session_url,
+                    transports=["websocket"],
+                ),
+                timeout=15,
             )
             await asyncio.wait_for(connected.wait(), timeout=15)
             await asyncio.wait_for(subscribed.wait(), timeout=15)
