@@ -202,7 +202,6 @@ class DonationListener:
                     sio.connect,
                     session_url,
                     transports=["websocket"],
-                    wait=True,
                 ),
                 timeout=30,
             )
