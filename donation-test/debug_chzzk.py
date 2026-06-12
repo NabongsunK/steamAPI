@@ -72,6 +72,14 @@ def check_dependencies() -> bool:
     except ImportError:
         print("⚠️ requests 없음 (polling 진단 시 필요) → pip install requests")
 
+    try:
+        import certifi
+
+        print(f"✅ certifi CA bundle: {certifi.where()}")
+    except ImportError:
+        print("❌ certifi 없음 → pip install certifi")
+        ok = False
+
     print(f"Python: {sys.version.split()[0]}")
     return ok
 
@@ -190,7 +198,11 @@ def check_websocket(session_url: str, active_sessions: int) -> None:
 
     if not result.ok:
         print("\n진단 힌트:")
-        if not result.dns_ok:
+        if any("SSLCertVerificationError" in e or "CERTIFICATE_VERIFY_FAILED" in e for e in result.errors):
+            print("  - SSL 인증서 검증 실패 → macOS Python CA 미설치가 흔한 원인")
+            print("    1) pip install certifi 후 debug_chzzk.py 재실행 (코드에 반영됨)")
+            print("    2) /Applications/Python\\ 3.13/Install\\ Certificates.command 실행")
+        elif not result.dns_ok:
             print("  - DNS 실패 → 맥미니/서버 DNS 설정 확인")
         elif not result.tcp_ok:
             print("  - TCP 443 실패 → 방화벽·ISP·ssio*.nchat.naver.com 차단 의심")

@@ -18,7 +18,12 @@ from chzzk_api import (
     list_user_sessions_sync,
     subscribe_donation_sync,
 )
-from chzzk_ws import build_engineio_ws_url, normalize_payload, probe_raw_websocket
+from chzzk_ws import (
+    build_engineio_ws_url,
+    normalize_payload,
+    probe_raw_websocket,
+    ssl_ca_bundle,
+)
 from donation_store import DonationStore, donation_record_now
 
 logger = logging.getLogger(__name__)
@@ -143,7 +148,12 @@ class DonationListener:
         subscribed = threading.Event()
         connect_error: list[str] = []
 
-        sio = socketio.Client(reconnection=False, logger=False, engineio_logger=False)
+        sio = socketio.Client(
+            reconnection=False,
+            logger=False,
+            engineio_logger=False,
+            ssl_verify=ssl_ca_bundle(),
+        )
 
         @sio.on("connect")
         def on_connect() -> None:

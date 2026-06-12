@@ -11,9 +11,19 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
+import certifi
 import socketio
 
 logger = logging.getLogger(__name__)
+
+
+def ssl_ca_bundle() -> str:
+    """macOS python.org 빌드 등에서 시스템 CA가 비어 있을 때 certifi 사용."""
+    return certifi.where()
+
+
+def websocket_sslopt() -> dict[str, str]:
+    return {"ca_certs": ssl_ca_bundle()}
 
 
 @dataclass
@@ -80,7 +90,11 @@ def probe_raw_websocket(
 
     ws_url = build_engineio_ws_url(session_url)
     try:
-        ws = websocket.create_connection(ws_url, timeout=timeout)
+        ws = websocket.create_connection(
+            ws_url,
+            timeout=timeout,
+            sslopt=websocket_sslopt(),
+        )
         first = ws.recv()
         ws.close()
         preview = first if isinstance(first, str) else first.decode("utf-8", errors="replace")
@@ -105,6 +119,7 @@ def connect_socketio(
         reconnection=False,
         logger=logger_enabled,
         engineio_logger=logger_enabled,
+        ssl_verify=ssl_ca_bundle(),
     )
 
     @sio.on("connect")
@@ -191,6 +206,7 @@ def probe_session_connection(
         reconnection=False,
         logger=socketio_logger,
         engineio_logger=socketio_logger,
+        ssl_verify=ssl_ca_bundle(),
     )
     system_payload: dict[str, Any] | None = None
     connect_errors: list[str] = []
