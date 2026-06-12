@@ -12,7 +12,11 @@ from typing import Any, Callable
 
 import socketio
 
-from chzzk_api import ChzzkApiError, get_session_url, subscribe_donation
+from chzzk_api import (
+    ChzzkApiError,
+    get_session_url,
+    subscribe_donation_sync,
+)
 from donation_store import DonationStore, donation_record_now
 
 logger = logging.getLogger(__name__)
@@ -124,25 +128,30 @@ class DonationListener:
                 raise
             access_token = await self._refresh_access_token(tokens)
             session_url = await get_session_url(access_token)
-        connected = threading.Event()
-        subscribed = threading.Event()
-        socket_error: list[Exception] = []
 
-        sio = socketio.Client(
-            reconnection=False,
-            logger=False,
-            engineio_logger=False,
-        )
+        await asyncio.to_thread(self._run_socket_session, session_url, access_token)
+
+    def _run_socket_session(self, session_url: str, access_token: str) -> None:
+        """Socket.IO 세션 — 치지직 gist와 동일하게 동기(single-thread)로 처리."""
+        session_ready = threading.Event()
+        subscribed = threading.Event()
+        connect_error: list[str] = []
+
+        sio = socketio.Client(reconnection=False, logger=False, engineio_logger=False)
 
         @sio.on("connect")
         def on_connect() -> None:
-            logger.info("Socket.IO 연결됨 (transport=%s)", getattr(sio, "transport", "?"))
-            connected.set()
+            logger.info(
+                "Socket.IO connect (sid=%s, transport=%s)",
+                getattr(sio, "sid", "?"),
+                getattr(sio, "transport", "?"),
+            )
 
         @sio.on("connect_error")
         def on_connect_error(data: Any) -> None:
-            logger.error("Socket.IO connect_error: %s", data)
-            socket_error.append(RuntimeError(f"connect_error: {data}"))
+            msg = str(data)
+            connect_error.append(msg)
+            logger.error("Socket.IO connect_error: %s", msg)
 
         @sio.on("disconnect")
         def on_disconnect() -> None:
@@ -156,12 +165,16 @@ class DonationListener:
             msg_type = payload.get("type")
             if msg_type == "connected":
                 session_key = (payload.get("data") or {}).get("sessionKey")
-                if session_key:
-                    self._session_key = session_key
-                    asyncio.run_coroutine_threadsafe(
-                        self._subscribe(access_token, session_key, subscribed),
-                        self._loop,
-                    )
+                if not session_key:
+                    return
+                self._session_key = session_key
+                session_ready.set()
+                try:
+                    subscribe_donation_sync(access_token, session_key)
+                    logger.info("후원 구독 요청 완료 (sessionKey=%s...)", session_key[:8])
+                except ChzzkApiError as exc:
+                    connect_error.append(str(exc))
+                    logger.error("후원 구독 API 실패: %s", exc)
             elif msg_type == "subscribed":
                 event_type = (payload.get("data") or {}).get("eventType")
                 if event_type == "DONATION":
@@ -195,58 +208,34 @@ class DonationListener:
             if self.on_donation:
                 self.on_donation(event)
 
-        logger.info("Session WS 연결 시도: %s...", session_url[:48])
+        logger.info("Session WS 연결 시도: %s...", session_url[:60])
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    sio.connect,
-                    session_url,
-                    transports=["websocket"],
-                ),
-                timeout=30,
-            )
-            if socket_error:
-                raise socket_error[0]
-
-            if not await asyncio.to_thread(connected.wait, 5):
-                raise TimeoutError(
-                    "Socket.IO connect 이벤트 타임아웃 — 세션 URL 만료 또는 프로토콜 불일치 가능"
-                )
-
-            if not await asyncio.to_thread(subscribed.wait, 30):
-                raise TimeoutError(
-                    "후원 구독(subscribed) 타임아웃 — Scope '후원 조회' 확인"
-                )
-
-            self._status = "listening"
-            self._last_error = None
-
-            while not self._stop.is_set() and sio.connected:
-                await asyncio.sleep(1)
+            sio.connect(session_url, transports=["websocket"])
         except Exception as exc:
-            socket_error.append(exc)
-            raise
-        finally:
-            if sio.connected:
-                await asyncio.to_thread(sio.disconnect)
+            raise RuntimeError(f"Socket.IO connect 실패: {exc}") from exc
 
-        if socket_error:
-            raise socket_error[0]
+        if connect_error:
+            raise RuntimeError(connect_error[0])
 
-    async def _subscribe(
-        self,
-        access_token: str,
-        session_key: str,
-        subscribed: threading.Event,
-    ) -> None:
-        try:
-            await subscribe_donation(access_token, session_key)
-            logger.info("후원 구독 요청 완료 (sessionKey=%s...)", session_key[:8])
-        except ChzzkApiError as exc:
-            if "INVALID_TOKEN" in str(exc) or exc.status_code == 401:
-                await self._try_refresh_and_resubscribe(session_key, subscribed)
-            else:
-                raise
+        if not sio.connected:
+            raise TimeoutError("Socket.IO 연결 실패 (sio.connected=False)")
+
+        if not session_ready.wait(timeout=20):
+            raise TimeoutError(
+                "SYSTEM connected 타임아웃 — 세션 URL 만료 또는 WebSocket 프로토콜 불일치"
+            )
+
+        if not subscribed.wait(timeout=30):
+            raise TimeoutError("후원 구독(subscribed) 타임아웃 — Scope '후원 조회' 확인")
+
+        self._status = "listening"
+        self._last_error = None
+
+        while not self._stop.is_set() and sio.connected:
+            self._stop.wait(timeout=1)
+
+        if sio.connected:
+            sio.disconnect()
 
     async def _refresh_access_token(self, tokens: dict[str, Any]) -> str:
         if not tokens.get("refresh_token"):
@@ -267,16 +256,6 @@ class DonationListener:
         )
         self.save_tokens(tokens)
         return tokens["access_token"]
-
-    async def _try_refresh_and_resubscribe(
-        self, session_key: str, subscribed: threading.Event
-    ) -> None:
-        tokens = self.get_tokens()
-        if not tokens:
-            raise ChzzkApiError("토큰 없음 — OAuth를 다시 진행하세요.")
-        access_token = await self._refresh_access_token(tokens)
-        await subscribe_donation(access_token, session_key)
-        subscribed.set()
 
 
 def _normalize_payload(data: Any) -> dict[str, Any]:

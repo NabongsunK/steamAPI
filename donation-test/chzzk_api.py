@@ -110,3 +110,18 @@ async def subscribe_donation(access_token: str, session_key: str) -> Any:
         )
         resp.raise_for_status()
         return _unwrap(resp.json())
+
+
+def subscribe_donation_sync(access_token: str, session_key: str) -> Any:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(
+            f"{API_BASE}/open/v1/sessions/events/subscribe/donation",
+            headers=headers,
+            params={"sessionKey": session_key},
+        )
+        resp.raise_for_status()
+        return _unwrap(resp.json())
