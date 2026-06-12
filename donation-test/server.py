@@ -17,7 +17,7 @@ from typing import Any
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from chzzk_api import (
@@ -28,6 +28,7 @@ from chzzk_api import (
     refresh_access_token,
 )
 from donation_listener import DonationListener
+from donation_store import DonationStore
 
 load_dotenv()
 
@@ -42,6 +43,9 @@ CLIENT_SECRET = os.getenv("CHZZK_CLIENT_SECRET", "")
 REDIRECT_URI = os.getenv("CHZZK_REDIRECT_URI", "http://localhost:3000/auth/chzzk/callback")
 PORT = int(os.getenv("PORT", "3000"))
 TOKEN_FILE = Path(os.getenv("TOKEN_FILE", "data/tokens.json"))
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+SQLITE_PATH = Path(os.getenv("SQLITE_PATH", "data/donations.db"))
+DONATION_LIST_LIMIT = int(os.getenv("DONATION_LIST_LIMIT", "50"))
 
 oauth_states: set[str] = set()
 _tokens: dict[str, Any] = {}
@@ -74,18 +78,27 @@ def _get_tokens() -> dict[str, Any] | None:
     return loaded or None
 
 
+donation_store = DonationStore(redis_url=REDIS_URL, sqlite_path=SQLITE_PATH)
+
 listener = DonationListener(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET,
     get_tokens=_get_tokens,
     save_tokens=_save_tokens,
     refresh_tokens=refresh_access_token,
+    store=donation_store,
 )
 
 
 @app.on_event("startup")
 async def startup() -> None:
     _get_tokens()
+    try:
+        donation_store.queue.ping()
+        donation_store.start_worker()
+        logger.info("Redis 연결 OK · 큐 워커 시작")
+    except Exception as exc:
+        logger.error("Redis 연결 실패 — redis-server 실행 여부 확인: %s", exc)
     listener.start()
     logger.info("후원 리스너 백그라운드 시작")
 
@@ -116,7 +129,7 @@ async def index() -> str:
     <li><a href="/auth/chzzk">치지직 로그인 (OAuth)</a></li>
     <li>본인 채널에 후원 테스트</li>
   </ol>
-  <p><a href="/status">/status</a> · <a href="/donations">/donations</a></p>
+  <p><a href="/status">/status</a> · <a href="/donations">/donations</a> · <a href="/donations/recent">/donations/recent</a></p>
 </body>
 </html>
 """
@@ -164,36 +177,64 @@ async def auth_callback(code: str | None = None, state: str | None = None, error
 @app.get("/status")
 async def status() -> dict[str, Any]:
     tokens = _get_tokens()
+    storage = donation_store.stats()
     return {
         "listener_status": listener.status,
         "session_key": listener.session_key,
         "last_error": listener.last_error,
         "has_access_token": bool(tokens and tokens.get("access_token")),
         "redirect_uri": REDIRECT_URI,
+        "storage": storage,
     }
 
 
 @app.get("/donations")
-async def donations() -> dict[str, Any]:
+async def donations(
+    limit: int = Query(default=DONATION_LIST_LIMIT, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    items = donation_store.sqlite.list_recent(limit=limit, offset=offset)
+    return {
+        "source": "sqlite",
+        "count": len(items),
+        "total": donation_store.sqlite.count(),
+        "queue_pending": donation_store.queue.queue_length(),
+        "donations": items,
+    }
+
+
+@app.get("/donations/recent")
+async def donations_recent(
+    limit: int = Query(default=DONATION_LIST_LIMIT, ge=1, le=200),
+) -> dict[str, Any]:
+    records = donation_store.queue.recent(limit=limit)
     items = [
         {
-            "received_at": d.received_at,
-            "donator_nickname": d.donator_nickname,
-            "pay_amount": d.pay_amount,
-            "donation_text": d.donation_text,
-            "donation_type": d.donation_type,
-            "channel_id": d.channel_id,
+            "received_at": r.received_at,
+            "donator_nickname": r.donator_nickname,
+            "pay_amount": r.pay_amount,
+            "donation_text": r.donation_text,
+            "donation_type": r.donation_type,
+            "channel_id": r.channel_id,
+            "donator_channel_id": r.donator_channel_id,
         }
-        for d in listener.recent_donations()
+        for r in records
     ]
-    return {"count": len(items), "donations": items}
+    return {
+        "source": "redis",
+        "count": len(items),
+        "queue_pending": donation_store.queue.queue_length(),
+        "donations": items,
+    }
 
 
 @app.post("/listener/restart")
 async def restart_listener() -> dict[str, str]:
     listener.stop()
+    donation_store.stop_worker()
+    donation_store.start_worker()
     listener.start()
-    return {"message": "listener restarted"}
+    return {"message": "listener and queue worker restarted"}
 
 
 def main() -> None:

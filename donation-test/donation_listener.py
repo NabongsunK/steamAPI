@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import threading
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -14,6 +13,7 @@ from typing import Any, Callable
 import socketio
 
 from chzzk_api import ChzzkApiError, get_session_url, subscribe_donation
+from donation_store import DonationStore, donation_record_now
 
 logger = logging.getLogger(__name__)
 
@@ -39,17 +39,16 @@ class DonationListener:
         get_tokens: Callable[[], dict[str, Any] | None],
         save_tokens: Callable[[dict[str, Any]], None],
         refresh_tokens: Callable[[str, str, str], Any],
+        store: DonationStore | None = None,
         on_donation: Callable[[DonationEvent], None] | None = None,
-        history_size: int = 50,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.get_tokens = get_tokens
         self.save_tokens = save_tokens
         self.refresh_tokens = refresh_tokens
+        self.store = store
         self.on_donation = on_donation
-
-        self._history: deque[DonationEvent] = deque(maxlen=history_size)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -68,9 +67,6 @@ class DonationListener:
     @property
     def last_error(self) -> str | None:
         return self._last_error
-
-    def recent_donations(self) -> list[DonationEvent]:
-        return list(self._history)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -183,13 +179,14 @@ class DonationListener:
                 donator_channel_id=str(payload.get("donatorChannelId", "")),
                 raw=payload,
             )
-            self._history.append(event)
             logger.info(
                 "후원 수신: %s / %s원 / %s",
                 event.donator_nickname,
                 event.pay_amount,
                 event.donation_text,
             )
+            if self.store:
+                self.store.enqueue(donation_record_now(payload))
             if self.on_donation:
                 self.on_donation(event)
 

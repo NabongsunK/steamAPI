@@ -26,19 +26,23 @@
 
 ## 설치
 
-Python 3.10 이상 권장.
+Python 3.10 이상 권장. **Redis** 가 로컬에서 실행 중이어야 합니다.
 
-```powershell
+**macOS / Linux**
+
+```bash
 cd donation-test
-pip install -r requirements.txt
-```
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
 
-가상환경을 쓰려면:
+# Redis (mac)
+brew install redis
+brew services start redis
+# 또는 한 번만: redis-server
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+# Redis (Ubuntu/Debian)
+# sudo apt install redis-server && sudo systemctl start redis
 ```
 
 ---
@@ -47,8 +51,9 @@ pip install -r requirements.txt
 
 `.env.example`을 복사해 `.env`를 만듭니다.
 
-```powershell
-copy .env.example .env
+```bash
+# macOS / Linux
+cp .env.example .env
 ```
 
 | 변수                  | 설명                  | 예시                                        |
@@ -58,6 +63,9 @@ copy .env.example .env
 | `CHZZK_REDIRECT_URI`  | OAuth 콜백 URL        | `http://localhost:3000/auth/chzzk/callback` |
 | `PORT`                | HTTP 서버 포트        | `3000`                                      |
 | `TOKEN_FILE`          | (선택) 토큰 저장 경로 | `data/tokens.json`                          |
+| `REDIS_URL`           | Redis 연결 URL        | `redis://127.0.0.1:6379/0`                  |
+| `SQLITE_PATH`         | 후원 DB 파일 경로     | `data/donations.db`                         |
+| `DONATION_LIST_LIMIT` | `/donations` 기본 개수 | `50`                                       |
 
 `.env`는 git에 올라가지 않습니다 (루트 `.gitignore` 처리).
 
@@ -100,8 +108,9 @@ OAuth 완료 후 백그라운드 리스너가 자동으로:
 
 **본인 채널**에 후원(치즈 등)을 보내 테스트합니다.
 
-- **터미널**: `후원 수신: 닉네임 / 금액 / 메시지` 로그
-- **브라우저/API**: http://localhost:3000/donations
+- **터미널**: `후원 수신` → `Redis 큐 적재` → `SQLite 저장` 로그
+- **영구 목록**: http://localhost:3000/donations (SQLite)
+- **Redis 최근 캐시**: http://localhost:3000/donations/recent
 
 ### 3. 상태 확인
 
@@ -113,6 +122,10 @@ http://localhost:3000/status
 | `session_key`      | 연결된 세션 키 (일부만 표시)                                  |
 | `last_error`       | 마지막 오류 메시지                                            |
 | `has_access_token` | OAuth 완료 여부                                               |
+| `storage.redis_connected` | Redis 연결 여부                                        |
+| `storage.queue_pending`   | 아직 SQLite에 안 들어간 큐 대기 건수                  |
+| `storage.sqlite_total`    | SQLite 누적 후원 건수                                 |
+| `storage.worker_running`  | Redis→SQLite 워커 실행 여부                           |
 
 리스너 재시작:
 
@@ -129,27 +142,60 @@ curl -X POST http://localhost:3000/listener/restart
 | `GET`  | `/`                    | 안내 페이지                      |
 | `GET`  | `/auth/chzzk`          | 치지직 OAuth 시작                |
 | `GET`  | `/auth/chzzk/callback` | OAuth 콜백 (치지직이 호출)       |
-| `GET`  | `/status`              | 리스너·토큰 상태 (JSON)          |
-| `GET`  | `/donations`           | 최근 후원 목록 (JSON, 최대 50건) |
-| `POST` | `/listener/restart`    | 후원 리스너 재시작               |
+| `GET`  | `/status`              | 리스너·토큰·저장소 상태 (JSON)   |
+| `GET`  | `/donations`           | SQLite 후원 목록 (`?limit=&offset=`) |
+| `GET`  | `/donations/recent`    | Redis 최근 캐시 (빠른 조회)      |
+| `POST` | `/listener/restart`    | 리스너 + 큐 워커 재시작          |
 
-### `/donations` 응답 예시
+### `/donations` 응답 예시 (SQLite)
 
 ```json
 {
+  "source": "sqlite",
   "count": 1,
+  "total": 12,
+  "queue_pending": 0,
   "donations": [
     {
+      "id": 12,
       "received_at": "2026-06-11T12:00:00+00:00",
       "donator_nickname": "홍길동",
       "pay_amount": "1000",
       "donation_text": "테스트",
       "donation_type": "CHAT",
-      "channel_id": "..."
+      "channel_id": "...",
+      "donator_channel_id": "...",
+      "created_at": "2026-06-11 12:00:01"
     }
   ]
 }
 ```
+
+---
+
+## 저장 구조 (Redis → SQLite)
+
+후원 이벤트는 메모리 대신 **Redis 큐 + SQLite** 로 처리합니다.
+
+```mermaid
+flowchart LR
+    WS[WebSocket DONATION] --> RQ[Redis donations:queue]
+    WS --> RC[Redis donations:recent]
+    RQ --> WK[큐 워커 BLPOP]
+    WK --> SQL[(SQLite donations.db)]
+    API["GET /donations"] --> SQL
+    API2["GET /donations/recent"] --> RC
+```
+
+| 저장소 | Redis 키 / 파일 | 역할 |
+|--------|-----------------|------|
+| **큐** | `donations:queue` | 후원 JSON 대기열 (RPUSH / BLPOP) |
+| **최근 캐시** | `donations:recent` | 최근 50건 빠른 조회 (LPUSH + LTRIM) |
+| **영구 저장** | `data/donations.db` | 워커가 큐에서 꺼내 INSERT |
+
+1. WebSocket `DONATION` 수신 → Redis 큐 + recent 적재  
+2. 백그라운드 워커가 `BLPOP`으로 꺼냄 → SQLite `donations` 테이블 INSERT  
+3. API는 SQLite에서 페이지네이션 조회 (`limit` / `offset`)
 
 ---
 
@@ -173,6 +219,8 @@ sequenceDiagram
     W-->>S: SYSTEM connected (sessionKey)
     S->>C: POST subscribe/donation
     W-->>S: DONATION 이벤트
+    S->>S: Redis 큐 적재
+    S->>S: 워커 → SQLite 저장
 ```
 
 ---
@@ -181,15 +229,17 @@ sequenceDiagram
 
 ```
 donation-test/
-├── README.md           # 이 문서
-├── server.py           # FastAPI · OAuth · HTTP API
-├── chzzk_api.py        # 토큰 발급/갱신, 세션 URL, 후원 구독
+├── README.md            # 이 문서
+├── server.py            # FastAPI · OAuth · HTTP API
+├── chzzk_api.py         # 토큰 발급/갱신, 세션 URL, 후원 구독
 ├── donation_listener.py # Socket.IO 후원 리스너
+├── donation_store.py    # Redis 큐 · SQLite · 워커
 ├── requirements.txt
 ├── .env.example
-├── .env                # 직접 생성 (git 제외)
+├── .env                 # 직접 생성 (git 제외)
 └── data/
-    └── tokens.json     # OAuth 토큰 (git 제외)
+    ├── tokens.json      # OAuth 토큰 (git 제외)
+    └── donations.db     # 후원 영구 저장 (git 제외)
 ```
 
 ---
@@ -220,6 +270,18 @@ donation-test/
 
 - 방화벽·VPN 이슈 확인
 - `/status`의 `last_error` 확인 후 `POST /listener/restart`
+
+### Redis 연결 실패
+
+- `redis-cli ping` → `PONG` 이어야 함
+- mac: `brew services start redis` 또는 `redis-server`
+- `.env`의 `REDIS_URL` 확인 (`redis://127.0.0.1:6379/0`)
+
+### 후원은 왔는데 `/donations`에 없음
+
+- `/status` → `storage.queue_pending` 이 0보다 크면 워커 지연/오류
+- `storage.worker_last_error` 확인
+- `/donations/recent` 에는 있는데 `/donations`에 없으면 SQLite INSERT 실패 가능
 
 ---
 

@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+donation-test/setup-env.ps1
 
 # Python
 __pycache__/
