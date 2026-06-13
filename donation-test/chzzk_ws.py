@@ -15,7 +15,7 @@ import certifi
 logger = logging.getLogger(__name__)
 
 # 맥미니에서 debug 출력으로 코드 동기화 여부 확인용
-WS_MODULE_VERSION = "2026-06-13-v5"
+WS_MODULE_VERSION = "2026-06-13-v6"
 
 
 class ChzzkWsAuthError(Exception):
@@ -77,6 +77,7 @@ class ChzzkSessionClient:
             raise RuntimeError("websocket-client 미설치") from exc
 
         ws_url = build_engineio_ws_url(session_url)
+        logger.debug("Engine.IO WS URL (query 앞 60자): %s", ws_url.split("?", 1)[-1][:60])
         self._ws = websocket.create_connection(
             ws_url,
             timeout=timeout,
@@ -197,11 +198,14 @@ def parse_session_url(session_url: str) -> tuple[str, int, str]:
 
 
 def build_engineio_ws_url(session_url: str) -> str:
-    host, port, auth = parse_session_url(session_url)
-    query = urlencode(
-        {"auth": auth, "transport": "websocket", "EIO": "3"},
-        quote_via=quote,
-    )
+    """API가 준 session URL의 query(auth=...)를 재인코딩하지 않고 그대로 사용."""
+    parsed = urlparse(session_url)
+    host = parsed.hostname or ""
+    port = parsed.port or 443
+    if not host or not parsed.query:
+        raise ValueError(f"session URL query 없음: {session_url[:80]}...")
+    extra = urlencode({"transport": "websocket", "EIO": "3"}, quote_via=quote)
+    query = f"{parsed.query}&{extra}"
     return f"wss://{host}:{port}/socket.io/?{query}"
 
 
@@ -436,8 +440,10 @@ def normalize_payload(data: Any) -> dict[str, Any]:
         lowered = text.lower()
         if lowered in {"auth fail", "auth failed", "authentication failed"}:
             raise ChzzkWsAuthError(
-                "치지직 WebSocket auth 실패 — session URL 만료·1회용 auth 재사용·"
-                "debug/server 동시 실행·/auth/chzzk 재로그인 확인"
+                "치지직 WebSocket auth 거부(auth fail) — "
+                "① 치지직 개발자센터 Scope '후원 조회' 심사 통과 확인 "
+                "② /auth/reset 후 https://wwmw.shop/auth/chzzk 재로그인 "
+                "③ debug_chzzk와 server.py 동시 실행 금지"
             )
         if not (text.startswith("{") or text.startswith("[")):
             return {"type": "error", "message": text}
