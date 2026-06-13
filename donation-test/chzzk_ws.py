@@ -55,6 +55,7 @@ class ChzzkSessionClient:
     def __init__(self) -> None:
         self._ws: Any = None
         self._session_key: str | None = None
+        self._pending_packets: list[str] = []
 
     @property
     def session_key(self) -> str | None:
@@ -77,29 +78,47 @@ class ChzzkSessionClient:
             sslopt=websocket_sslopt(),
         )
         self._ws.settimeout(1.0)
+        self._pending_packets = []
 
         open_packet = _decode_packet(self._ws.recv())
         if not open_packet.startswith("0"):
             self.close()
             raise RuntimeError(f"Engine.IO open 실패: {open_packet[:120]!r}")
 
+        _engineio_probe_handshake(self._ws)
         self._ws.send("40")
 
     def read_event(self, *, timeout: float = 1.0) -> SessionEvent | None:
         if not self._ws:
             return None
 
+        if self._pending_packets:
+            packet = self._pending_packets.pop(0)
+            return self._packet_to_event(packet)
+
         self._ws.settimeout(timeout)
         try:
-            packet = _decode_packet(self._ws.recv())
+            raw = _decode_packet(self._ws.recv())
         except Exception as exc:
             exc_name = type(exc).__name__
             if exc_name in {"WebSocketTimeoutException", "TimeoutError"}:
                 return None
             raise
 
-        if packet == "2":
-            self._ws.send("3")
+        for packet in _split_engineio_packets(raw):
+            event = self._packet_to_event(packet)
+            if event:
+                return event
+        return None
+
+    def _packet_to_event(self, packet: str) -> SessionEvent | None:
+        if packet == "2" or packet == "2probe":
+            if self._ws:
+                self._ws.send("3" if packet == "2" else "3probe")
+            return None
+
+        if packet.startswith("40") or packet.startswith("41") or packet.startswith("44"):
+            logger.debug("Socket.IO control packet: %s", packet[:120])
             return None
 
         parsed = _parse_socketio_event(packet)
@@ -280,10 +299,106 @@ def _decode_packet(raw: Any) -> str:
     return str(raw)
 
 
+def _engineio_probe_handshake(ws: Any) -> None:
+    """open(0) 이후 probe → upgrade (CHZZK open에 upgrades 포함 시)."""
+    ws.settimeout(0.5)
+    try:
+        ws.send("2probe")
+        resp = _decode_packet(ws.recv())
+        if resp == "3probe":
+            ws.send("5")
+        elif resp.startswith("2"):
+            ws.send("3probe" if resp == "2probe" else "3")
+        else:
+            logger.debug("probe 응답 없음/다른 패킷: %r", resp[:80])
+    except Exception:
+        pass
+    ws.settimeout(1.0)
+
+
+def _split_engineio_packets(buf: str) -> list[str]:
+    """한 WebSocket 프레임에 붙은 Engine.IO 패킷 분리 (예: 40{...}42[...])."""
+    packets: list[str] = []
+    i = 0
+    n = len(buf)
+
+    while i < n:
+        if not buf[i].isdigit():
+            i += 1
+            continue
+
+        start = i
+        pkt_type = int(buf[i])
+        i += 1
+
+        if pkt_type == 4 and i < n and buf[i].isdigit():
+            i += 1
+            i = _skip_json_value(buf, i)
+        elif pkt_type == 0 and i < n and buf[i] == "{":
+            i = _skip_json_value(buf, i)
+        elif pkt_type in (2, 3):
+            while i < n and buf[i].isalpha():
+                i += 1
+
+        packets.append(buf[start:i])
+
+    return packets if packets else [buf]
+
+
+def _skip_json_value(buf: str, i: int) -> int:
+    n = len(buf)
+    if i >= n:
+        return i
+
+    ch = buf[i]
+    if ch == "{":
+        depth = 0
+        while i < n:
+            if buf[i] == "{":
+                depth += 1
+            elif buf[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return n
+
+    if ch == "[":
+        depth = 0
+        while i < n:
+            if buf[i] == "[":
+                depth += 1
+            elif buf[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    return i + 1
+            i += 1
+        return n
+
+    if ch == '"':
+        i += 1
+        while i < n:
+            if buf[i] == "\\":
+                i += 2
+                continue
+            if buf[i] == '"':
+                return i + 1
+            i += 1
+        return n
+
+    return i
+
+
 def _parse_socketio_event(packet: str) -> tuple[str, Any] | None:
     if not packet.startswith("42"):
         return None
-    body = json.loads(packet[2:])
+    body_text = packet[2:]
+    if not body_text:
+        return None
+    try:
+        body = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Socket.IO event JSON 파싱 실패: {packet[:160]!r}") from exc
     if not isinstance(body, list) or not body:
         return None
     name = str(body[0])
@@ -298,8 +413,8 @@ def normalize_payload(data: Any) -> dict[str, Any]:
         first = data[0]
         if isinstance(first, dict):
             return first
-        if isinstance(first, str):
+        if isinstance(first, str) and first:
             return json.loads(first)
-    if isinstance(data, str):
+    if isinstance(data, str) and data:
         return json.loads(data)
     return {"value": data}
