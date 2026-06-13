@@ -1,4 +1,4 @@
-"""Socket.IO로 치지직 후원(DONATION) 이벤트 수신."""
+"""Engine.IO WebSocket으로 치지직 후원(DONATION) 이벤트 수신."""
 
 from __future__ import annotations
 
@@ -6,11 +6,10 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
-
-import socketio
 
 from chzzk_api import (
     ChzzkApiError,
@@ -18,12 +17,7 @@ from chzzk_api import (
     list_user_sessions_sync,
     subscribe_donation_sync,
 )
-from chzzk_ws import (
-    build_engineio_ws_url,
-    normalize_payload,
-    probe_raw_websocket,
-    ssl_ca_bundle,
-)
+from chzzk_ws import ChzzkSessionClient, build_engineio_ws_url
 from donation_store import DonationStore, donation_record_now
 
 logger = logging.getLogger(__name__)
@@ -130,135 +124,111 @@ class DonationListener:
         await asyncio.to_thread(self._run_socket_session, access_token)
 
     def _run_socket_session(self, access_token: str) -> None:
-        """Socket.IO 세션 — URL 발급 직후 바로 연결 (URL 만료 방지)."""
+        """WebSocket 세션 — URL 발급 직후 바로 연결 (URL 만료 방지)."""
         active = self._count_active_sessions(access_token)
         if active >= 3:
             raise RuntimeError(
                 f"활성 WebSocket 세션이 {active}개(최대 3) — server 중지 후 1~2분 대기"
             )
 
-        try:
-            session_url = get_session_url_sync(access_token)
-        except ChzzkApiError as exc:
-            if "INVALID_TOKEN" not in str(exc) and exc.status_code != 401:
-                raise
-            raise
-
-        session_ready = threading.Event()
+        session_url = get_session_url_sync(access_token)
         subscribed = threading.Event()
         connect_error: list[str] = []
-
-        sio = socketio.Client(
-            reconnection=False,
-            logger=False,
-            engineio_logger=False,
-            ssl_verify=ssl_ca_bundle(),
-        )
-
-        @sio.on("connect")
-        def on_connect() -> None:
-            logger.info(
-                "Socket.IO connect (sid=%s, transport=%s)",
-                getattr(sio, "sid", "?"),
-                getattr(sio, "transport", "?"),
-            )
-
-        @sio.on("connect_error")
-        def on_connect_error(data: Any) -> None:
-            msg = str(data)
-            connect_error.append(msg)
-            logger.error("Socket.IO connect_error: %s", msg)
-
-        @sio.on("disconnect")
-        def on_disconnect() -> None:
-            logger.warning("Socket.IO 연결 끊김")
-            self._status = "disconnected"
-
-        @sio.on("SYSTEM")
-        def on_system(data: Any) -> None:
-            payload = normalize_payload(data)
-            logger.info("SYSTEM: %s", json.dumps(payload, ensure_ascii=False))
-            msg_type = payload.get("type")
-            if msg_type == "connected":
-                session_key = (payload.get("data") or {}).get("sessionKey")
-                if not session_key:
-                    return
-                self._session_key = session_key
-                session_ready.set()
-                try:
-                    subscribe_donation_sync(access_token, session_key)
-                    logger.info("후원 구독 요청 완료 (sessionKey=%s...)", session_key[:8])
-                except ChzzkApiError as exc:
-                    connect_error.append(str(exc))
-                    logger.error("후원 구독 API 실패: %s", exc)
-            elif msg_type == "subscribed":
-                event_type = (payload.get("data") or {}).get("eventType")
-                if event_type == "DONATION":
-                    self._status = "listening"
-                    subscribed.set()
-            elif msg_type == "revoked":
-                self._status = "revoked"
-                logger.error("후원 권한이 회수되었습니다: %s", payload)
-
-        @sio.on("DONATION")
-        def on_donation(data: Any) -> None:
-            payload = normalize_payload(data)
-            event = DonationEvent(
-                received_at=datetime.now(timezone.utc).isoformat(),
-                donator_nickname=str(payload.get("donatorNickname", "")),
-                pay_amount=str(payload.get("payAmount", "")),
-                donation_text=str(payload.get("donationText", "")),
-                donation_type=str(payload.get("donationType", "")),
-                channel_id=str(payload.get("channelId", "")),
-                donator_channel_id=str(payload.get("donatorChannelId", "")),
-                raw=payload,
-            )
-            logger.info(
-                "후원 수신: %s / %s원 / %s",
-                event.donator_nickname,
-                event.pay_amount,
-                event.donation_text,
-            )
-            if self.store:
-                self.store.enqueue(donation_record_now(payload))
-            if self.on_donation:
-                self.on_donation(event)
+        client = ChzzkSessionClient()
 
         logger.info("Session WS 연결 시도: %s...", session_url[:60])
         logger.debug("Engine.IO URL: %s", build_engineio_ws_url(session_url)[:120])
+
         try:
-            sio.connect(session_url, transports=["websocket"])
-        except Exception as exc:
-            raw_ok, raw_err, _ = probe_raw_websocket(session_url)
-            detail = exc.__cause__ or exc
-            hint = raw_err if not raw_ok else str(detail)
-            raise RuntimeError(
-                f"Socket.IO connect 실패: {exc} — {hint} "
-                "(ssio*.nchat.naver.com:443·세션 3개 초과·URL 만료 확인)"
-            ) from exc
+            client.connect(session_url)
+            logger.info("Engine.IO WebSocket 연결 완료, SYSTEM connected 대기")
 
-        if connect_error:
-            raise RuntimeError(connect_error[0])
-
-        if not sio.connected:
-            raise TimeoutError("Socket.IO 연결 실패 (sio.connected=False)")
-
-        if not session_ready.wait(timeout=20):
-            raise TimeoutError(
-                "SYSTEM connected 타임아웃 — 세션 URL 만료 또는 WebSocket 프로토콜 불일치"
+            connected_event = client.wait_for(
+                predicate=lambda ev: ev.name == "SYSTEM" and ev.payload.get("type") == "connected",
+                timeout=20.0,
             )
+            session_key = (connected_event.payload.get("data") or {}).get("sessionKey")
+            if not session_key:
+                raise RuntimeError("SYSTEM connected에 sessionKey 없음")
 
-        if not subscribed.wait(timeout=30):
-            raise TimeoutError("후원 구독(subscribed) 타임아웃 — Scope '후원 조회' 확인")
+            self._session_key = session_key
+            logger.info("SYSTEM connected (sessionKey=%s...)", session_key[:8])
 
-        self._status = "listening"
-        self._last_error = None
+            subscribe_donation_sync(access_token, session_key)
+            logger.info("후원 구독 요청 완료 (sessionKey=%s...)", session_key[:8])
 
-        while not self._stop.is_set() and sio.connected:
-            self._stop.wait(timeout=1)
+            deadline = time.time() + 30
+            while time.time() < deadline and not self._stop.is_set() and not subscribed.is_set():
+                event = client.read_event(timeout=1.0)
+                if not event:
+                    continue
+                self._handle_session_event(
+                    event.payload,
+                    subscribed=subscribed,
+                    connect_error=connect_error,
+                )
 
-        if sio.connected:
-            sio.disconnect()
+            if connect_error:
+                raise RuntimeError(connect_error[0])
+            if not subscribed.is_set():
+                raise TimeoutError("후원 구독(subscribed) 타임아웃 — Scope '후원 조회' 확인")
+
+            self._status = "listening"
+            self._last_error = None
+
+            while not self._stop.is_set() and client.connected:
+                event = client.read_event(timeout=1.0)
+                if not event:
+                    continue
+                if event.name == "DONATION":
+                    self._handle_donation(event.payload)
+                elif event.name == "SYSTEM":
+                    self._handle_session_event(
+                        event.payload,
+                        subscribed=subscribed,
+                        connect_error=connect_error,
+                    )
+        finally:
+            client.close()
+
+    def _handle_session_event(
+        self,
+        payload: dict[str, Any],
+        *,
+        subscribed: threading.Event,
+        connect_error: list[str],
+    ) -> None:
+        logger.info("SYSTEM: %s", json.dumps(payload, ensure_ascii=False))
+        msg_type = payload.get("type")
+        if msg_type == "subscribed":
+            event_type = (payload.get("data") or {}).get("eventType")
+            if event_type == "DONATION":
+                subscribed.set()
+        elif msg_type == "revoked":
+            self._status = "revoked"
+            logger.error("후원 권한이 회수되었습니다: %s", payload)
+
+    def _handle_donation(self, payload: dict[str, Any]) -> None:
+        event = DonationEvent(
+            received_at=datetime.now(timezone.utc).isoformat(),
+            donator_nickname=str(payload.get("donatorNickname", "")),
+            pay_amount=str(payload.get("payAmount", "")),
+            donation_text=str(payload.get("donationText", "")),
+            donation_type=str(payload.get("donationType", "")),
+            channel_id=str(payload.get("channelId", "")),
+            donator_channel_id=str(payload.get("donatorChannelId", "")),
+            raw=payload,
+        )
+        logger.info(
+            "후원 수신: %s / %s원 / %s",
+            event.donator_nickname,
+            event.pay_amount,
+            event.donation_text,
+        )
+        if self.store:
+            self.store.enqueue(donation_record_now(payload))
+        if self.on_donation:
+            self.on_donation(event)
 
     async def _refresh_access_token(self, tokens: dict[str, Any]) -> str:
         if not tokens.get("refresh_token"):

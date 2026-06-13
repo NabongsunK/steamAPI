@@ -12,7 +12,6 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import certifi
-import socketio
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +23,12 @@ def ssl_ca_bundle() -> str:
 
 def websocket_sslopt() -> dict[str, str]:
     return {"ca_certs": ssl_ca_bundle()}
+
+
+@dataclass
+class SessionEvent:
+    name: str
+    payload: dict[str, Any]
 
 
 @dataclass
@@ -42,6 +47,93 @@ class WsProbeResult:
     @property
     def ok(self) -> bool:
         return self.socketio_ok
+
+
+class ChzzkSessionClient:
+    """websocket-client로 Engine.IO v3 + Socket.IO v2 직접 연결 (python-socketio 미사용)."""
+
+    def __init__(self) -> None:
+        self._ws: Any = None
+        self._session_key: str | None = None
+
+    @property
+    def session_key(self) -> str | None:
+        return self._session_key
+
+    @property
+    def connected(self) -> bool:
+        return self._ws is not None
+
+    def connect(self, session_url: str, *, timeout: float = 20.0) -> None:
+        try:
+            import websocket
+        except ImportError as exc:
+            raise RuntimeError("websocket-client 미설치") from exc
+
+        ws_url = build_engineio_ws_url(session_url)
+        self._ws = websocket.create_connection(
+            ws_url,
+            timeout=timeout,
+            sslopt=websocket_sslopt(),
+        )
+        self._ws.settimeout(1.0)
+
+        open_packet = _decode_packet(self._ws.recv())
+        if not open_packet.startswith("0"):
+            self.close()
+            raise RuntimeError(f"Engine.IO open 실패: {open_packet[:120]!r}")
+
+        self._ws.send("40")
+
+    def read_event(self, *, timeout: float = 1.0) -> SessionEvent | None:
+        if not self._ws:
+            return None
+
+        self._ws.settimeout(timeout)
+        try:
+            packet = _decode_packet(self._ws.recv())
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            if exc_name in {"WebSocketTimeoutException", "TimeoutError"}:
+                return None
+            raise
+
+        if packet == "2":
+            self._ws.send("3")
+            return None
+
+        parsed = _parse_socketio_event(packet)
+        if not parsed:
+            return None
+
+        name, data = parsed
+        payload = normalize_payload(data)
+        if name == "SYSTEM" and payload.get("type") == "connected":
+            session_key = (payload.get("data") or {}).get("sessionKey")
+            if session_key:
+                self._session_key = session_key
+        return SessionEvent(name=name, payload=payload)
+
+    def wait_for(
+        self,
+        *,
+        predicate: Callable[[SessionEvent], bool],
+        timeout: float = 20.0,
+    ) -> SessionEvent:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            event = self.read_event(timeout=min(1.0, max(0.1, deadline - time.time())))
+            if event and predicate(event):
+                return event
+        raise TimeoutError("이벤트 대기 타임아웃")
+
+    def close(self) -> None:
+        if self._ws is not None:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
 
 
 def parse_session_url(session_url: str) -> tuple[str, int, str]:
@@ -103,79 +195,35 @@ def probe_raw_websocket(
         return False, f"{type(exc).__name__}: {exc}", None
 
 
-def connect_socketio(
+def probe_socketio_session(
     session_url: str,
     *,
-    on_system: Callable[[dict[str, Any]], None] | None = None,
-    on_donation: Callable[[dict[str, Any]], None] | None = None,
-    logger_enabled: bool = False,
-    wait_system_seconds: float = 20.0,
-) -> tuple[socketio.Client, threading.Event, list[str]]:
-    """Socket.IO 연결. (sio, system_ready_event, errors) 반환."""
-    session_ready = threading.Event()
-    errors: list[str] = []
-
-    sio = socketio.Client(
-        reconnection=False,
-        logger=logger_enabled,
-        engineio_logger=logger_enabled,
-        ssl_verify=ssl_ca_bundle(),
-    )
-
-    @sio.on("connect")
-    def on_connect() -> None:
-        logger.info(
-            "Socket.IO connect (sid=%s, transport=%s)",
-            getattr(sio, "sid", "?"),
-            getattr(sio, "transport", "?"),
+    timeout: float = 20.0,
+) -> tuple[bool, dict[str, Any] | None, str | None]:
+    """Engine.IO 직접 연결 후 SYSTEM connected 확인."""
+    client = ChzzkSessionClient()
+    try:
+        client.connect(session_url, timeout=timeout)
+        event = client.wait_for(
+            predicate=lambda ev: ev.name == "SYSTEM" and ev.payload.get("type") == "connected",
+            timeout=timeout,
         )
-
-    @sio.on("connect_error")
-    def on_connect_error(data: Any) -> None:
-        msg = str(data)
-        errors.append(msg)
-        logger.error("Socket.IO connect_error: %s", msg)
-
-    @sio.on("SYSTEM")
-    def on_system_event(data: Any) -> None:
-        payload = normalize_payload(data)
-        logger.info("SYSTEM: %s", json.dumps(payload, ensure_ascii=False))
-        if on_system:
-            on_system(payload)
-        if payload.get("type") == "connected":
-            session_ready.set()
-
-    if on_donation:
-
-        @sio.on("DONATION")
-        def on_donation_event(data: Any) -> None:
-            on_donation(normalize_payload(data))
-
-    logger.info("Session WS 연결 시도: %s...", session_url[:60])
-    sio.connect(session_url, transports=["websocket"])
-
-    if errors:
-        raise RuntimeError(errors[0])
-    if not sio.connected:
-        raise TimeoutError("Socket.IO 연결 실패 (sio.connected=False)")
-    if not session_ready.wait(timeout=wait_system_seconds):
-        sio.disconnect()
-        raise TimeoutError("SYSTEM connected 타임아웃 — URL 만료 또는 WS 프로토콜 불일치")
-
-    return sio, session_ready, errors
+        return True, event.payload, None
+    except Exception as exc:
+        return False, None, f"{type(exc).__name__}: {exc}"
+    finally:
+        client.close()
 
 
 def probe_session_connection(
     session_url: str,
     *,
     active_sessions: int | None = None,
-    socketio_logger: bool = False,
     fetch_fresh_url: Callable[[], str] | None = None,
 ) -> WsProbeResult:
     """세션 URL 진단.
 
     raw WS와 Socket.IO는 auth 토큰이 1회용이라 **서로 다른 URL**이 필요합니다.
-    `fetch_fresh_url`로 Socket.IO 직전에 새 URL을 발급받으세요.
     """
     host, port, _ = parse_session_url(session_url)
     result = WsProbeResult(
@@ -208,62 +256,39 @@ def probe_session_connection(
     if not raw_ok:
         return result
 
-    if fetch_fresh_url is None:
-        result.errors.append(
-            "socket.io: raw WS 후 동일 auth URL 재사용 불가 — fetch_fresh_url 필요"
-        )
-        return result
+    socketio_url = session_url
+    if fetch_fresh_url is not None:
+        try:
+            socketio_url = fetch_fresh_url()
+            print(f"→ Socket.IO용 새 session URL 발급: {socketio_url.split('?')[0]}")
+        except Exception as exc:
+            result.errors.append(f"session: 새 URL 발급 실패: {exc}")
+            return result
 
-    try:
-        socketio_url = fetch_fresh_url()
-        logger.info("Socket.IO용 새 session URL 발급: %s...", socketio_url[:60])
-    except Exception as exc:
-        result.errors.append(f"socket.io: 새 session URL 발급 실패: {exc}")
-        return result
-
-    sio = socketio.Client(
-        reconnection=False,
-        logger=socketio_logger,
-        engineio_logger=socketio_logger,
-        ssl_verify=ssl_ca_bundle(),
-    )
-    system_payload: dict[str, Any] | None = None
-    connect_errors: list[str] = []
-
-    @sio.on("connect")
-    def on_connect() -> None:
-        logger.info("Socket.IO connect (transport=%s)", getattr(sio, "transport", "?"))
-
-    @sio.on("connect_error")
-    def on_connect_error(data: Any) -> None:
-        connect_errors.append(str(data))
-
-    @sio.on("SYSTEM")
-    def on_system(data: Any) -> None:
-        nonlocal system_payload
-        payload = normalize_payload(data)
-        if payload.get("type") == "connected":
-            system_payload = payload
-
-    try:
-        sio.connect(socketio_url, transports=["websocket"])
-        deadline = time.time() + 15
-        while time.time() < deadline and system_payload is None and sio.connected:
-            time.sleep(0.1)
-        result.socketio_ok = sio.connected and system_payload is not None
-        result.system_payload = system_payload
-        if connect_errors:
-            result.errors.append(f"socket.io: {connect_errors[0]}")
-        if sio.connected and system_payload is None:
-            result.errors.append("socket.io: SYSTEM connected 타임아웃")
-    except Exception as exc:
-        detail = exc.__cause__ or exc
-        result.errors.append(f"socket.io: {exc} ({detail})")
-    finally:
-        if sio.connected:
-            sio.disconnect()
+    ok, system_payload, err = probe_socketio_session(socketio_url)
+    result.socketio_ok = ok
+    result.system_payload = system_payload
+    if err:
+        result.errors.append(f"Engine.IO session: {err}")
 
     return result
+
+
+def _decode_packet(raw: Any) -> str:
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8")
+    return str(raw)
+
+
+def _parse_socketio_event(packet: str) -> tuple[str, Any] | None:
+    if not packet.startswith("42"):
+        return None
+    body = json.loads(packet[2:])
+    if not isinstance(body, list) or not body:
+        return None
+    name = str(body[0])
+    data = body[1] if len(body) > 1 else None
+    return name, data
 
 
 def normalize_payload(data: Any) -> dict[str, Any]:

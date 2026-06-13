@@ -180,7 +180,6 @@ def check_websocket(session_url: str, access_token: str, active_sessions: int) -
     result = probe_session_connection(
         session_url,
         active_sessions=active_sessions,
-        socketio_logger=True,
         fetch_fresh_url=lambda: get_session_url_sync(access_token),
     )
 
@@ -189,7 +188,7 @@ def check_websocket(session_url: str, access_token: str, active_sessions: int) -
     print(f"raw WebSocket: {'✅' if result.raw_ws_ok else '❌'}")
     if result.raw_first_packet:
         print(f"   첫 패킷: {result.raw_first_packet!r}")
-    print(f"Socket.IO + SYSTEM connected: {'✅' if result.socketio_ok else '❌'}")
+    print(f"Engine.IO + SYSTEM connected: {'✅' if result.socketio_ok else '❌'}")
     if result.system_payload:
         sk = (result.system_payload.get("data") or {}).get("sessionKey", "")
         print(f"   sessionKey: {sk[:12]}..." if sk else "   sessionKey 없음")
@@ -212,7 +211,7 @@ def check_websocket(session_url: str, access_token: str, active_sessions: int) -
         elif not result.raw_ws_ok:
             print("  - raw WS 실패 → TLS/핸드셰이크 거부 (세션 만료·auth 무효·3개 초과)")
         elif result.raw_ws_ok and not result.socketio_ok:
-            print("  - raw WS OK + Socket.IO 실패 → ssl_verify·버전·Scope(후원 조회) 확인")
+            print("  - raw WS OK + Engine.IO 실패 → Scope(후원 조회)·세션 URL 만료 확인")
         if active_sessions >= 3:
             print("  - 활성 세션 3개 → 재시도 루프 중지 후 잠시 대기")
 
