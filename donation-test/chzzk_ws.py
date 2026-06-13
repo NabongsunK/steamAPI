@@ -15,7 +15,7 @@ import certifi
 logger = logging.getLogger(__name__)
 
 # 맥미니에서 debug 출력으로 코드 동기화 여부 확인용
-WS_MODULE_VERSION = "2026-06-13-v6"
+WS_MODULE_VERSION = "2026-06-13-v7"
 
 
 class ChzzkWsAuthError(Exception):
@@ -61,6 +61,7 @@ class ChzzkSessionClient:
     def __init__(self) -> None:
         self._ws: Any = None
         self._session_key: str | None = None
+        self._pending_events: list[SessionEvent] = []
 
     @property
     def session_key(self) -> str | None:
@@ -76,8 +77,9 @@ class ChzzkSessionClient:
         except ImportError as exc:
             raise RuntimeError("websocket-client 미설치") from exc
 
+        self._pending_events = []
         ws_url = build_engineio_ws_url(session_url)
-        logger.debug("Engine.IO WS URL (query 앞 60자): %s", ws_url.split("?", 1)[-1][:60])
+        logger.info("Engine.IO WS query (앞 70자): %s...", ws_url.split("?", 1)[-1][:70])
         self._ws = websocket.create_connection(
             ws_url,
             timeout=timeout,
@@ -90,8 +92,43 @@ class ChzzkSessionClient:
             self.close()
             raise RuntimeError(f"Engine.IO open 실패: {open_packet[:120]!r}")
 
-        # transport=websocket 직접 연결 — probe/upgrade(2probe·5) 불필요
+        logger.info("Engine.IO open OK: %s", open_packet[:100])
+
+        for raw in self._recv_burst(max_wait=0.4, max_packets=10):
+            logger.info("open 직후 패킷: %r", raw[:240])
+            if _raw_is_auth_fail(raw):
+                raise ChzzkWsAuthError(_auth_fail_message())
+            event = self._process_raw(raw)
+            if event:
+                self._pending_events.append(event)
+
+        if self._session_key:
+            logger.info("40 전송 생략 — 이미 SYSTEM connected")
+            return
+
         self._ws.send("40")
+        logger.info("Socket.IO namespace connect (40) 전송")
+
+        for raw in self._recv_burst(max_wait=0.5, max_packets=5):
+            logger.info("40 직후 패킷: %r", raw[:240])
+            if _raw_is_auth_fail(raw):
+                raise ChzzkWsAuthError(_auth_fail_message())
+            event = self._process_raw(raw)
+            if event:
+                self._pending_events.append(event)
+
+    def _recv_burst(self, *, max_wait: float, max_packets: int) -> list[str]:
+        if not self._ws:
+            return []
+        packets: list[str] = []
+        self._ws.settimeout(max_wait)
+        for _ in range(max_packets):
+            try:
+                packets.append(_decode_packet(self._ws.recv()))
+            except Exception:
+                break
+        self._ws.settimeout(1.0)
+        return packets
 
     def connect_fresh(
         self,
@@ -108,6 +145,9 @@ class ChzzkSessionClient:
     def read_event(self, *, timeout: float = 1.0) -> SessionEvent | None:
         if not self._ws:
             return None
+
+        if self._pending_events:
+            return self._pending_events.pop(0)
 
         self._ws.settimeout(timeout)
         try:
@@ -171,6 +211,19 @@ class ChzzkSessionClient:
             except Exception:
                 pass
             self._ws = None
+
+
+def _auth_fail_message() -> str:
+    return (
+        "치지직 WebSocket auth 거부(auth fail) — "
+        "① 개발자센터 Scope '후원 조회' 심사 통과 "
+        "② curl -X POST http://127.0.0.1:3000/auth/reset 후 /auth/chzzk 재로그인 "
+        "③ debug와 server 동시 실행 금지"
+    )
+
+
+def _raw_is_auth_fail(raw: str) -> bool:
+    return "auth fail" in raw.lower()
 
 
 def extract_auth_token(session_url: str) -> str:
@@ -439,12 +492,7 @@ def normalize_payload(data: Any) -> dict[str, Any]:
             return {"value": ""}
         lowered = text.lower()
         if lowered in {"auth fail", "auth failed", "authentication failed"}:
-            raise ChzzkWsAuthError(
-                "치지직 WebSocket auth 거부(auth fail) — "
-                "① 치지직 개발자센터 Scope '후원 조회' 심사 통과 확인 "
-                "② /auth/reset 후 https://wwmw.shop/auth/chzzk 재로그인 "
-                "③ debug_chzzk와 server.py 동시 실행 금지"
-            )
+            raise ChzzkWsAuthError(_auth_fail_message())
         if not (text.startswith("{") or text.startswith("[")):
             return {"type": "error", "message": text}
         try:
