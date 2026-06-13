@@ -15,7 +15,11 @@ import certifi
 logger = logging.getLogger(__name__)
 
 # 맥미니에서 debug 출력으로 코드 동기화 여부 확인용
-WS_MODULE_VERSION = "2026-06-13-v3"
+WS_MODULE_VERSION = "2026-06-13-v4"
+
+
+class ChzzkWsAuthError(Exception):
+    """WebSocket session URL의 auth 토큰 거부 (만료·재사용·OAuth 무효)."""
 
 
 def ssl_ca_bundle() -> str:
@@ -87,6 +91,18 @@ class ChzzkSessionClient:
 
         # transport=websocket 직접 연결 — probe/upgrade(2probe·5) 불필요
         self._ws.send("40")
+
+    def connect_fresh(
+        self,
+        access_token: str,
+        fetch_session_url: Callable[[str], str],
+        *,
+        timeout: float = 20.0,
+    ) -> str:
+        """session URL 발급 직후 즉시 연결 (auth 만료 방지)."""
+        session_url = fetch_session_url(access_token)
+        self.connect(session_url, timeout=timeout)
+        return session_url
 
     def read_event(self, *, timeout: float = 1.0) -> SessionEvent | None:
         if not self._ws:
@@ -400,10 +416,18 @@ def normalize_payload(data: Any) -> dict[str, Any]:
         text = data.strip()
         if not text:
             return {"value": ""}
+        lowered = text.lower()
+        if lowered in {"auth fail", "auth failed", "authentication failed"}:
+            raise ChzzkWsAuthError(
+                "치지직 WebSocket auth 실패 — session URL 만료·1회용 auth 재사용·"
+                "debug/server 동시 실행·/auth/chzzk 재로그인 확인"
+            )
+        if not (text.startswith("{") or text.startswith("[")):
+            return {"type": "error", "message": text}
         try:
             parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"payload JSON 파싱 실패: {data[:200]!r}") from exc
+        except json.JSONDecodeError:
+            return {"type": "error", "message": text}
         if isinstance(parsed, dict):
             return parsed
         return {"value": parsed}

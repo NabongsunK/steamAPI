@@ -17,7 +17,7 @@ from chzzk_api import (
     list_user_sessions_sync,
     subscribe_donation_sync,
 )
-from chzzk_ws import ChzzkSessionClient, build_engineio_ws_url
+from chzzk_ws import ChzzkSessionClient, build_engineio_ws_url, ChzzkWsAuthError
 from donation_store import DonationStore, donation_record_now
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,11 @@ class DonationListener:
         while not self._stop.is_set():
             try:
                 await self._connect_once()
+            except ChzzkWsAuthError as exc:
+                self._last_error = str(exc)
+                self._status = "error"
+                logger.error("WebSocket auth 실패: %s", exc)
+                await asyncio.sleep(60)
             except ChzzkApiError as exc:
                 self._last_error = str(exc)
                 self._status = "error"
@@ -136,11 +141,9 @@ class DonationListener:
         connect_error: list[str] = []
         client = ChzzkSessionClient()
 
-        logger.info("Session WS 연결 시도: %s...", session_url[:60])
-        logger.debug("Engine.IO URL: %s", build_engineio_ws_url(session_url)[:120])
-
         try:
-            client.connect(session_url)
+            session_url = client.connect_fresh(access_token, get_session_url_sync)
+            logger.info("Session WS 연결 시도: %s...", session_url[:60])
             logger.info("Engine.IO WebSocket 연결 완료, SYSTEM connected 대기")
 
             connected_event = client.wait_for(
