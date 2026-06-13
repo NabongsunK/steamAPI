@@ -170,7 +170,13 @@ def probe_session_connection(
     *,
     active_sessions: int | None = None,
     socketio_logger: bool = False,
+    fetch_fresh_url: Callable[[], str] | None = None,
 ) -> WsProbeResult:
+    """세션 URL 진단.
+
+    raw WS와 Socket.IO는 auth 토큰이 1회용이라 **서로 다른 URL**이 필요합니다.
+    `fetch_fresh_url`로 Socket.IO 직전에 새 URL을 발급받으세요.
+    """
     host, port, _ = parse_session_url(session_url)
     result = WsProbeResult(
         host=host,
@@ -202,6 +208,19 @@ def probe_session_connection(
     if not raw_ok:
         return result
 
+    if fetch_fresh_url is None:
+        result.errors.append(
+            "socket.io: raw WS 후 동일 auth URL 재사용 불가 — fetch_fresh_url 필요"
+        )
+        return result
+
+    try:
+        socketio_url = fetch_fresh_url()
+        logger.info("Socket.IO용 새 session URL 발급: %s...", socketio_url[:60])
+    except Exception as exc:
+        result.errors.append(f"socket.io: 새 session URL 발급 실패: {exc}")
+        return result
+
     sio = socketio.Client(
         reconnection=False,
         logger=socketio_logger,
@@ -210,6 +229,10 @@ def probe_session_connection(
     )
     system_payload: dict[str, Any] | None = None
     connect_errors: list[str] = []
+
+    @sio.on("connect")
+    def on_connect() -> None:
+        logger.info("Socket.IO connect (transport=%s)", getattr(sio, "transport", "?"))
 
     @sio.on("connect_error")
     def on_connect_error(data: Any) -> None:
@@ -223,7 +246,7 @@ def probe_session_connection(
             system_payload = payload
 
     try:
-        sio.connect(session_url, transports=["websocket"])
+        sio.connect(socketio_url, transports=["websocket"])
         deadline = time.time() + 15
         while time.time() < deadline and system_payload is None and sio.connected:
             time.sleep(0.1)

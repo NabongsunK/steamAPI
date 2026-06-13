@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
+from chzzk_api import get_session_url_sync
 from chzzk_ws import (
     build_engineio_ws_url,
     parse_session_url,
@@ -170,15 +171,17 @@ def check_session_list(access_token: str) -> int:
     return active
 
 
-def check_websocket(session_url: str, active_sessions: int) -> None:
+def check_websocket(session_url: str, access_token: str, active_sessions: int) -> None:
     _print_section("4) WebSocket — DNS → TCP → raw WS → Socket.IO")
     print("세션 URL은 발급 직후 바로 연결해야 합니다 (30초~1분 내 미연결 시 만료).")
+    print("auth 토큰은 1회용 → raw WS와 Socket.IO는 각각 별도 URL 사용.")
     print(f"현재 활성 세션: {active_sessions}개\n")
 
     result = probe_session_connection(
         session_url,
         active_sessions=active_sessions,
         socketio_logger=True,
+        fetch_fresh_url=lambda: get_session_url_sync(access_token),
     )
 
     print(f"DNS ({result.host}): {'✅' if result.dns_ok else '❌'}")
@@ -208,8 +211,8 @@ def check_websocket(session_url: str, active_sessions: int) -> None:
             print("  - TCP 443 실패 → 방화벽·ISP·ssio*.nchat.naver.com 차단 의심")
         elif not result.raw_ws_ok:
             print("  - raw WS 실패 → TLS/핸드셰이크 거부 (세션 만료·auth 무효·3개 초과)")
-        else:
-            print("  - raw WS는 OK인데 Socket.IO만 실패 → python-socketio/engineio 버전 확인")
+        elif result.raw_ws_ok and not result.socketio_ok:
+            print("  - raw WS OK + Socket.IO 실패 → ssl_verify·버전·Scope(후원 조회) 확인")
         if active_sessions >= 3:
             print("  - 활성 세션 3개 → 재시도 루프 중지 후 잠시 대기")
 
@@ -226,7 +229,7 @@ def main() -> int:
     active = check_session_list(token)
 
     if session_url:
-        check_websocket(session_url, active)
+        check_websocket(session_url, token, active)
     else:
         print("\n⚠️ session URL 없어서 WebSocket 테스트 생략")
 
