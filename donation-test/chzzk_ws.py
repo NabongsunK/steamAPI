@@ -15,7 +15,7 @@ import certifi
 logger = logging.getLogger(__name__)
 
 # 맥미니에서 debug 출력으로 코드 동기화 여부 확인용
-WS_MODULE_VERSION = "2026-06-13-v7"
+WS_MODULE_VERSION = "2026-06-13-v8"
 
 
 class ChzzkWsAuthError(Exception):
@@ -95,12 +95,7 @@ class ChzzkSessionClient:
         logger.info("Engine.IO open OK: %s", open_packet[:100])
 
         for raw in self._recv_burst(max_wait=0.4, max_packets=10):
-            logger.info("open 직후 패킷: %r", raw[:240])
-            if _raw_is_auth_fail(raw):
-                raise ChzzkWsAuthError(_auth_fail_message())
-            event = self._process_raw(raw)
-            if event:
-                self._pending_events.append(event)
+            self._ingest_raw(raw)
 
         if self._session_key:
             logger.info("40 전송 생략 — 이미 SYSTEM connected")
@@ -109,13 +104,22 @@ class ChzzkSessionClient:
         self._ws.send("40")
         logger.info("Socket.IO namespace connect (40) 전송")
 
-        for raw in self._recv_burst(max_wait=0.5, max_packets=5):
-            logger.info("40 직후 패킷: %r", raw[:240])
-            if _raw_is_auth_fail(raw):
-                raise ChzzkWsAuthError(_auth_fail_message())
-            event = self._process_raw(raw)
-            if event:
-                self._pending_events.append(event)
+        deadline = time.time() + timeout
+        while time.time() < deadline and not self._session_key:
+            for raw in self._recv_burst(max_wait=0.5, max_packets=20):
+                self._ingest_raw(raw)
+
+        if not self._session_key:
+            raise TimeoutError(
+                "SYSTEM connected 타임아웃 — error/auth fail 후 sessionKey 미수신"
+            )
+        logger.info("SYSTEM connected (sessionKey=%s...)", self._session_key[:8])
+
+    def _ingest_raw(self, raw: str) -> None:
+        logger.debug("WS recv: %r", raw[:240])
+        event = self._process_raw(raw)
+        if event:
+            self._pending_events.append(event)
 
     def _recv_burst(self, *, max_wait: float, max_packets: int) -> list[str]:
         if not self._ws:
@@ -182,6 +186,11 @@ class ChzzkSessionClient:
 
         name = str(body[0])
         data = body[1] if len(body) > 1 else None
+
+        if name == "error":
+            logger.warning("Socket.IO error 이벤트 (무시·재연결 대기): %s", data)
+            return None
+
         payload = normalize_payload(data)
 
         if name == "SYSTEM" and payload.get("type") == "connected":
@@ -215,15 +224,9 @@ class ChzzkSessionClient:
 
 def _auth_fail_message() -> str:
     return (
-        "치지직 WebSocket auth 거부(auth fail) — "
-        "① 개발자센터 Scope '후원 조회' 심사 통과 "
-        "② curl -X POST http://127.0.0.1:3000/auth/reset 후 /auth/chzzk 재로그인 "
-        "③ debug와 server 동시 실행 금지"
+        "치지직 WebSocket auth 최종 실패 — "
+        "Scope '후원 조회'·OAuth 재로그인 확인"
     )
-
-
-def _raw_is_auth_fail(raw: str) -> bool:
-    return "auth fail" in raw.lower()
 
 
 def extract_auth_token(session_url: str) -> str:
@@ -352,12 +355,10 @@ def probe_socketio_session(
     trace: list[str] = []
     try:
         client.connect(session_url, timeout=timeout)
-        trace.append("connect: open(0) OK, sent 40")
-        event = client.wait_for(
-            predicate=lambda ev: ev.name == "SYSTEM" and ev.payload.get("type") == "connected",
-            timeout=timeout,
-        )
-        return True, event.payload, None, trace
+        if client.session_key:
+            payload = {"type": "connected", "data": {"sessionKey": client.session_key}}
+            return True, payload, None, trace
+        return False, None, "sessionKey 없음", trace
     except Exception as exc:
         trace.extend(trace_session_packets(session_url, timeout=10))
         return False, None, f"{type(exc).__name__}: {exc}", trace
@@ -490,9 +491,6 @@ def normalize_payload(data: Any) -> dict[str, Any]:
         text = data.strip()
         if not text:
             return {"value": ""}
-        lowered = text.lower()
-        if lowered in {"auth fail", "auth failed", "authentication failed"}:
-            raise ChzzkWsAuthError(_auth_fail_message())
         if not (text.startswith("{") or text.startswith("[")):
             return {"type": "error", "message": text}
         try:

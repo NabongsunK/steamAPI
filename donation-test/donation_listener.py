@@ -142,14 +142,17 @@ class DonationListener:
 
         try:
             session_url = client.connect_fresh(access_token, get_session_url_sync)
-            logger.info("Session WS 연결 시도: %s...", session_url[:60])
-            logger.info("Engine.IO WebSocket 연결 완료, SYSTEM connected 대기")
+            logger.info("Session WS 연결: %s...", session_url[:60])
 
-            connected_event = client.wait_for(
-                predicate=lambda ev: ev.name == "SYSTEM" and ev.payload.get("type") == "connected",
-                timeout=20.0,
-            )
-            session_key = (connected_event.payload.get("data") or {}).get("sessionKey")
+            session_key = client.session_key
+            if not session_key:
+                connected_event = client.wait_for(
+                    predicate=lambda ev: ev.name == "SYSTEM"
+                    and ev.payload.get("type") == "connected",
+                    timeout=20.0,
+                )
+                session_key = (connected_event.payload.get("data") or {}).get("sessionKey")
+
             if not session_key:
                 raise RuntimeError("SYSTEM connected에 sessionKey 없음")
 

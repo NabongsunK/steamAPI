@@ -57,8 +57,13 @@ def main() -> int:
         print("⚠️ python-socketio 없음")
 
     print("\n--- raw 패킷 추적 (40 전송) ---")
-    for line in trace_session_packets(session_url, timeout=8):
+    trace = trace_session_packets(session_url, timeout=8)
+    for line in trace:
         print(line)
+    if any("sessionKey" in line for line in trace):
+        print("\n✅ SYSTEM connected — server.py 실행 가능")
+    else:
+        print("\n❌ sessionKey 미수신")
 
     return 0
 
