@@ -24,6 +24,7 @@ from chzzk_ws import (
     build_engineio_ws_url,
     parse_session_url,
     probe_session_connection,
+    WS_MODULE_VERSION,
 )
 
 load_dotenv()
@@ -82,6 +83,7 @@ def check_dependencies() -> bool:
         ok = False
 
     print(f"Python: {sys.version.split()[0]}")
+    print(f"chzzk_ws 모듈 버전: {WS_MODULE_VERSION}")
     return ok
 
 
@@ -197,6 +199,11 @@ def check_websocket(session_url: str, access_token: str, active_sessions: int) -
         print("\n오류 상세:")
         for err in result.errors:
             print(f"  • {err}")
+
+    if result.trace_packets:
+        print("\n패킷 추적 (실패 시 자동 기록):")
+        for line in result.trace_packets:
+            print(f"  {line}")
 
     if not result.ok:
         print("\n진단 힌트:")
