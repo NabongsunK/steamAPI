@@ -136,7 +136,6 @@ class DonationListener:
                 f"활성 WebSocket 세션이 {active}개(최대 3) — server 중지 후 1~2분 대기"
             )
 
-        session_url = get_session_url_sync(access_token)
         subscribed = threading.Event()
         connect_error: list[str] = []
         client = ChzzkSessionClient()

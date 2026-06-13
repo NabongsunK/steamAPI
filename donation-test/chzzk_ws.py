@@ -8,14 +8,14 @@ import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import certifi
 
 logger = logging.getLogger(__name__)
 
 # 맥미니에서 debug 출력으로 코드 동기화 여부 확인용
-WS_MODULE_VERSION = "2026-06-13-v4"
+WS_MODULE_VERSION = "2026-06-13-v5"
 
 
 class ChzzkWsAuthError(Exception):
@@ -172,19 +172,36 @@ class ChzzkSessionClient:
             self._ws = None
 
 
+def extract_auth_token(session_url: str) -> str:
+    """parse_qs는 auth 토큰의 '+'를 공백으로 바꿔 auth fail 유발 — 문자열로 직접 추출."""
+    marker = "auth="
+    idx = session_url.find(marker)
+    if idx == -1:
+        raise ValueError(f"auth= 없음: {session_url[:80]}...")
+    rest = session_url[idx + len(marker):]
+    amp = rest.find("&")
+    token = rest[:amp] if amp != -1 else rest
+    if not token:
+        raise ValueError("auth 토큰 비어 있음")
+    return token
+
+
 def parse_session_url(session_url: str) -> tuple[str, int, str]:
     parsed = urlparse(session_url)
     host = parsed.hostname or ""
     port = parsed.port or 443
-    auth = parse_qs(parsed.query).get("auth", [""])[0]
-    if not host or not auth:
+    auth = extract_auth_token(session_url)
+    if not host:
         raise ValueError(f"session URL 형식 오류: {session_url[:80]}...")
     return host, port, auth
 
 
 def build_engineio_ws_url(session_url: str) -> str:
     host, port, auth = parse_session_url(session_url)
-    query = urlencode({"auth": auth, "transport": "websocket", "EIO": "3"})
+    query = urlencode(
+        {"auth": auth, "transport": "websocket", "EIO": "3"},
+        quote_via=quote,
+    )
     return f"wss://{host}:{port}/socket.io/?{query}"
 
 
