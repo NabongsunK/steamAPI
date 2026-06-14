@@ -91,13 +91,11 @@ def is_admin_request_allowed(request: Request) -> bool:
     peer = _peer_ip(request)
     via_cf = is_via_cloudflare(request)
 
-    # 특정 IP 화이트리스트 (설정 시 Tailscale 전체 대신 이 목록만)
+    # 특정 IP 화이트리스트 — 목록에 있는 IP만 (127.0.0.1 자동 허용 없음)
     if ADMIN_ALLOWED_NETWORKS:
-        if peer in ("127.0.0.1", "::1") and not via_cf:
-            return True
-        if is_ip_allowed(peer) and not via_cf:
-            return True
-        return False
+        if via_cf:
+            return False
+        return is_ip_allowed(peer)
 
     # 맥미니 로컬 (터널·CF 없음)
     if peer in ("127.0.0.1", "::1") and not via_cf:
