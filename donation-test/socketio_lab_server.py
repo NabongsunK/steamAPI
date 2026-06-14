@@ -3,6 +3,7 @@
 Socket.IO 에코 테스트 서버 (치지직 API 무관).
 
   cd donation-test
+  pip install eventlet   # lab 서버용 (python-socketio 4.x + Python 3.13)
   python socketio_lab_server.py
 
 다른 PC에서 접속:
@@ -24,37 +25,40 @@ logger = logging.getLogger(__name__)
 HOST = os.getenv("SOCKETIO_LAB_HOST", "0.0.0.0")
 PORT = int(os.getenv("SOCKETIO_LAB_PORT", "8765"))
 
-sio = socketio.AsyncServer(
-    async_mode="asgi",
-    cors_allowed_origins="*",
-    logger=False,
-    engineio_logger=False,
-)
-app = socketio.ASGIApp(sio)
+# AsyncServer + uvicorn은 Python 3.13에서 python-socketio 4.6.x emit 버그 유발
+sio = socketio.Server(cors_allowed_origins="*")
+app = socketio.WSGIApp(sio)
 
 
 @sio.event
-async def connect(sid, environ) -> None:
+def connect(sid, environ) -> None:
     addr = environ.get("REMOTE_ADDR", "?")
     logger.info("연결: sid=%s from=%s", sid, addr)
 
 
 @sio.event
-async def disconnect(sid) -> None:
+def disconnect(sid) -> None:
     logger.info("종료: sid=%s", sid)
 
 
 @sio.on("ping_test")
-async def on_ping_test(sid, data) -> None:
+def on_ping_test(sid, data) -> None:
     logger.info("ping_test: sid=%s data=%s", sid, data)
-    await sio.emit("pong_test", {"echo": data, "sid": sid}, to=sid)
+    sio.emit("pong_test", {"echo": data, "sid": sid}, room=sid)
 
 
 def main() -> None:
-    import uvicorn
+    try:
+        import eventlet
+        import eventlet.wsgi
+    except ImportError:
+        raise SystemExit(
+            "eventlet 필요: pip install eventlet\n"
+            "(python-socketio 4.6 + Python 3.13 lab 서버용)"
+        )
 
-    logger.info("Socket.IO lab 서버 시작 — %s:%d (WebSocket only)", HOST, PORT)
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+    logger.info("Socket.IO lab 서버 시작 — %s:%d (eventlet)", HOST, PORT)
+    eventlet.wsgi.server(eventlet.listen((HOST, PORT)), app)
 
 
 if __name__ == "__main__":

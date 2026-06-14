@@ -49,7 +49,8 @@ def run_socketio_client(url: str, timeout: float) -> bool:
         print(f"  python-socketio: connect_error {data!r}")
 
     try:
-        client.connect(url, transports=["websocket"], wait_timeout=timeout)
+        # python-socketio 4.6.x는 wait_timeout 미지원
+        client.connect(url, transports=["websocket"])
         deadline = time.time() + timeout
         while time.time() < deadline and client.connected and not got_pong:
             time.sleep(0.1)
