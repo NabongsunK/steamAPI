@@ -16,7 +16,7 @@ from typing import Any
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -30,13 +30,6 @@ from chzzk_api import (
     revoke_token_sync,
 )
 from donation_store import DonationStore
-from admin_guard import (
-    ADMIN_ALLOWED_NETWORKS,
-    ADMIN_TAILSCALE_ONLY,
-    admin_denied_response,
-    is_admin_request_allowed,
-    needs_admin_protection,
-)
 from listener_manager import DonationListenerManager
 from streamer_store import StreamerStore
 
@@ -148,17 +141,6 @@ listener_manager = DonationListenerManager(
 )
 
 
-@app.middleware("http")
-async def tailscale_admin_guard(request: Request, call_next):
-    if needs_admin_protection(
-        request.url.path,
-        request.method,
-        request.query_params,
-    ) and not is_admin_request_allowed(request):
-        return admin_denied_response(request)
-    return await call_next(request)
-
-
 @app.on_event("startup")
 async def startup() -> None:
     migrated = streamer_store.import_legacy_tokens(TOKEN_FILE)
@@ -178,16 +160,6 @@ async def startup() -> None:
     except Exception as exc:
         logger.error("Redis 연결 실패 — redis-server 실행 여부 확인: %s", exc)
     listener_manager.start_all()
-    if ADMIN_TAILSCALE_ONLY:
-        if ADMIN_ALLOWED_NETWORKS:
-            logger.info(
-                "관리 API 보호 ON — 허용 IP만 (%s)",
-                os.getenv("ADMIN_ALLOWED_IPS", ""),
-            )
-        else:
-            logger.info(
-                "관리 API 보호 ON — Tailscale 직접 접속 또는 X-Admin-Key"
-            )
     logger.info("후원 리스너 매니저 시작 (스트리머 %d명)", len(streamer_store.list_all()))
 
 
@@ -345,8 +317,7 @@ def _admin_html(streamers: list[dict[str, Any]], redirect_ok: bool) -> str:
     <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>초기화</th></tr>
     {rows}
   </table>
-  <p class="hint">관리 페이지는 Tailscale VPN으로 맥미니 IP에 직접 접속하세요.
-     (예: <code>http://100.73.52.88:3000/admin</code> — wwmw.shop 경유 불가)</p>
+  <p><a href="/status">/status</a> · <a href="/streamers">/streamers</a> · <a href="/donations">/donations</a></p>
 </body>
 </html>
 """
