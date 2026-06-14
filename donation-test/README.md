@@ -16,8 +16,10 @@
 1. [치지직 Open API](https://chzzk.gitbook.io/chzzk)에서 애플리케이션 등록
 2. **Client ID**, **Client Secret** 발급
 3. **로그인 리디렉션 URL** 등록
-   - 기본값: `http://localhost:3000/auth/chzzk/callback`
-   - `.env`의 `CHZZK_REDIRECT_URI`와 **완전히 동일**해야 합니다.
+
+- 기본값: `http://localhost:3000/auth/chzzk/callback`
+- `.env`의 `CHZZK_REDIRECT_URI`와 **완전히 동일**해야 합니다.
+
 4. Scope에서 **후원 조회** 체크
 
 > 후원 WebSocket은 **스트리머 본인 계정** OAuth가 필요합니다. Client ID/Secret만으로는 후원 이벤트를 받을 수 없습니다.
@@ -56,16 +58,16 @@ brew services start redis
 cp .env.example .env
 ```
 
-| 변수                  | 설명                  | 예시                                        |
-| --------------------- | --------------------- | ------------------------------------------- |
-| `CHZZK_CLIENT_ID`     | 앱 Client ID          | `fefb6bbb-...`                              |
-| `CHZZK_CLIENT_SECRET` | 앱 Client Secret      | `VeIMuc9X...`                               |
-| `CHZZK_REDIRECT_URI`  | OAuth 콜백 URL        | `http://localhost:3000/auth/chzzk/callback` |
-| `PORT`                | HTTP 서버 포트        | `3000`                                      |
-| `TOKEN_FILE`          | (선택) 토큰 저장 경로 | `data/tokens.json`                          |
-| `REDIS_URL`           | Redis 연결 URL        | `redis://127.0.0.1:6379/0`                  |
-| `SQLITE_PATH`         | 후원 DB 파일 경로     | `data/donations.db`                         |
-| `DONATION_LIST_LIMIT` | `/donations` 기본 개수 | `50`                                       |
+| 변수                  | 설명                   | 예시                                        |
+| --------------------- | ---------------------- | ------------------------------------------- |
+| `CHZZK_CLIENT_ID`     | 앱 Client ID           | `fefb6bbb-...`                              |
+| `CHZZK_CLIENT_SECRET` | 앱 Client Secret       | `VeIMuc9X...`                               |
+| `CHZZK_REDIRECT_URI`  | OAuth 콜백 URL         | `http://localhost:3000/auth/chzzk/callback` |
+| `PORT`                | HTTP 서버 포트         | `3000`                                      |
+| `TOKEN_FILE`          | (선택) 토큰 저장 경로  | `data/tokens.json`                          |
+| `REDIS_URL`           | Redis 연결 URL         | `redis://127.0.0.1:6379/0`                  |
+| `SQLITE_PATH`         | 후원 DB 파일 경로      | `data/donations.db`                         |
+| `DONATION_LIST_LIMIT` | `/donations` 기본 개수 | `50`                                        |
 
 `.env`는 git에 올라가지 않습니다 (루트 `.gitignore` 처리).
 
@@ -78,7 +80,7 @@ cd donation-test
 python server.py
 ```
 
-기본 주소: http://localhost:3000
+기본 주소: [http://localhost:3000](http://localhost:3000)
 
 ---
 
@@ -86,7 +88,7 @@ python server.py
 
 ### 1. OAuth (최초 1회)
 
-1. 브라우저에서 http://localhost:3000 접속
+1. 브라우저에서 [http://localhost:3000](http://localhost:3000) 접속
 2. **치지직 로그인 (OAuth)** 클릭
 3. **본인 스트리머 계정**으로 로그인·권한 동의
 4. 콜백 후 메인 페이지로 돌아오면 토큰이 `data/tokens.json`에 저장됩니다.
@@ -109,23 +111,23 @@ OAuth 완료 후 백그라운드 리스너가 자동으로:
 **본인 채널**에 후원(치즈 등)을 보내 테스트합니다.
 
 - **터미널**: `후원 수신` → `Redis 큐 적재` → `SQLite 저장` 로그
-- **영구 목록**: http://localhost:3000/donations (SQLite)
-- **Redis 최근 캐시**: http://localhost:3000/donations/recent
+- **영구 목록**: [http://localhost:3000/donations](http://localhost:3000/donations) (SQLite)
+- **Redis 최근 캐시**: [http://localhost:3000/donations/recent](http://localhost:3000/donations/recent)
 
 ### 3. 상태 확인
 
-http://localhost:3000/status
+[http://localhost:3000/status](http://localhost:3000/status)
 
-| 필드               | 의미                                                          |
-| ------------------ | ------------------------------------------------------------- |
-| `listener_status`  | `waiting_for_oauth` · `connecting` · `listening` · `error` 등 |
-| `session_key`      | 연결된 세션 키 (일부만 표시)                                  |
-| `last_error`       | 마지막 오류 메시지                                            |
-| `has_access_token` | OAuth 완료 여부                                               |
-| `storage.redis_connected` | Redis 연결 여부                                        |
-| `storage.queue_pending`   | 아직 SQLite에 안 들어간 큐 대기 건수                  |
-| `storage.sqlite_total`    | SQLite 누적 후원 건수                                 |
-| `storage.worker_running`  | Redis→SQLite 워커 실행 여부                           |
+| 필드                      | 의미                                                          |
+| ------------------------- | ------------------------------------------------------------- |
+| `listener_status`         | `waiting_for_oauth` · `connecting` · `listening` · `error` 등 |
+| `session_key`             | 연결된 세션 키 (일부만 표시)                                  |
+| `last_error`              | 마지막 오류 메시지                                            |
+| `has_access_token`        | OAuth 완료 여부                                               |
+| `storage.redis_connected` | Redis 연결 여부                                               |
+| `storage.queue_pending`   | 아직 SQLite에 안 들어간 큐 대기 건수                          |
+| `storage.sqlite_total`    | SQLite 누적 후원 건수                                         |
+| `storage.worker_running`  | Redis→SQLite 워커 실행 여부                                   |
 
 리스너 재시작:
 
@@ -137,15 +139,15 @@ curl -X POST http://localhost:3000/listener/restart
 
 ## HTTP API
 
-| 메서드 | 경로                   | 설명                             |
-| ------ | ---------------------- | -------------------------------- |
-| `GET`  | `/`                    | 안내 페이지                      |
-| `GET`  | `/auth/chzzk`          | 치지직 OAuth 시작                |
-| `GET`  | `/auth/chzzk/callback` | OAuth 콜백 (치지직이 호출)       |
-| `GET`  | `/status`              | 리스너·토큰·저장소 상태 (JSON)   |
+| 메서드 | 경로                   | 설명                                 |
+| ------ | ---------------------- | ------------------------------------ |
+| `GET`  | `/`                    | 안내 페이지                          |
+| `GET`  | `/auth/chzzk`          | 치지직 OAuth 시작                    |
+| `GET`  | `/auth/chzzk/callback` | OAuth 콜백 (치지직이 호출)           |
+| `GET`  | `/status`              | 리스너·토큰·저장소 상태 (JSON)       |
 | `GET`  | `/donations`           | SQLite 후원 목록 (`?limit=&offset=`) |
-| `GET`  | `/donations/recent`    | Redis 최근 캐시 (빠른 조회)      |
-| `POST` | `/listener/restart`    | 리스너 + 큐 워커 재시작          |
+| `GET`  | `/donations/recent`    | Redis 최근 캐시 (빠른 조회)          |
+| `POST` | `/listener/restart`    | 리스너 + 큐 워커 재시작              |
 
 ### `/donations` 응답 예시 (SQLite)
 
@@ -187,14 +189,14 @@ flowchart LR
     API2["GET /donations/recent"] --> RC
 ```
 
-| 저장소 | Redis 키 / 파일 | 역할 |
-|--------|-----------------|------|
-| **큐** | `donations:queue` | 후원 JSON 대기열 (RPUSH / BLPOP) |
-| **최근 캐시** | `donations:recent` | 최근 50건 빠른 조회 (LPUSH + LTRIM) |
-| **영구 저장** | `data/donations.db` | 워커가 큐에서 꺼내 INSERT |
+| 저장소        | Redis 키 / 파일     | 역할                                |
+| ------------- | ------------------- | ----------------------------------- |
+| **큐**        | `donations:queue`   | 후원 JSON 대기열 (RPUSH / BLPOP)    |
+| **최근 캐시** | `donations:recent`  | 최근 50건 빠른 조회 (LPUSH + LTRIM) |
+| **영구 저장** | `data/donations.db` | 워커가 큐에서 꺼내 INSERT           |
 
-1. WebSocket `DONATION` 수신 → Redis 큐 + recent 적재  
-2. 백그라운드 워커가 `BLPOP`으로 꺼냄 → SQLite `donations` 테이블 INSERT  
+1. WebSocket `DONATION` 수신 → Redis 큐 + recent 적재
+2. 백그라운드 워커가 `BLPOP`으로 꺼냄 → SQLite `donations` 테이블 INSERT
 3. API는 SQLite에서 페이지네이션 조회 (`limit` / `offset`)
 
 ---
