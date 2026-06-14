@@ -52,6 +52,23 @@ class StreamerStore:
             )
             conn.commit()
 
+    def get_by_display_name(self, display_name: str) -> Streamer | None:
+        name = display_name.strip()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT uid, display_name, chzzk_channel_id, created_at, access_token "
+                "FROM streamers WHERE display_name = ?",
+                (name,),
+            ).fetchone()
+        return self._row_to_streamer(row) if row else None
+
+    def get_or_create(self, display_name: str) -> tuple[Streamer, bool]:
+        """이름으로 조회, 없으면 생성. (streamer, created)"""
+        existing = self.get_by_display_name(display_name)
+        if existing:
+            return existing, False
+        return self.create(display_name), True
+
     def create(self, display_name: str) -> Streamer:
         name = display_name.strip()
         if not name:

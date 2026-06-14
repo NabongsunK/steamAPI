@@ -1,11 +1,8 @@
 """
 치지직 후원 API 테스트 서버 (다중 스트리머 uid).
 
-1. .env 에 Client ID/Secret 설정
-2. python server.py
-3. POST /streamers 로 스트리머 등록 → uid 발급
-4. GET /auth/chzzk?uid=<uid> OAuth
-5. 본인 채널 후원 → GET /donations?streamer_uid=<uid>
+스트리머: https://wwmw.shop/ — 닉네임 입력 후 치지직 연결
+개발자:  /admin, /status, POST /streamers (API)
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ from typing import Any
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Form, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -201,56 +198,125 @@ async def _handle_oauth_callback(
     return RedirectResponse(f"/?oauth=ok&uid={streamer_uid}")
 
 
-def _index_html(streamers: list[dict[str, Any]], redirect_ok: bool, oauth_msg: str, oauth_uid: str) -> str:
-    oauth_banner = ""
+def _streamer_status(uid: str) -> dict[str, Any] | None:
+    for row in listener_manager.statuses():
+        if row["streamer_uid"] == uid:
+            return row
+    return None
+
+
+def _streamer_landing_html(oauth_msg: str, oauth_uid: str) -> str:
+    banner = ""
+    reconnect = ""
     if oauth_msg == "ok" and oauth_uid:
-        oauth_banner = f'<p class="ok"><strong>OAuth 연결 완료!</strong> uid=<code>{oauth_uid}</code></p>'
-
-    rows = ""
-    for s in streamers:
-        uid = s["streamer_uid"]
-        auth = f'/auth/chzzk?uid={uid}'
-        rows += f"""
-        <tr>
-          <td><code>{uid[:8]}…</code></td>
-          <td>{s["display_name"]}</td>
-          <td>{s["listener_status"]}</td>
-          <td>{'✓' if s["has_token"] else '—'}</td>
-          <td><a href="{auth}">OAuth</a></td>
-          <td><a href="/donations?streamer_uid={uid}">후원</a></td>
-        </tr>"""
-
-    if not rows:
-        rows = '<tr><td colspan="6">스트리머 없음 — POST /streamers 로 등록</td></tr>'
+        st = _streamer_status(oauth_uid)
+        name = st["display_name"] if st else "스트리머"
+        status = st["listener_status"] if st else "unknown"
+        banner = f"""
+  <div class="card ok">
+    <h2>연결 완료</h2>
+    <p><strong>{name}</strong> 님, 치지직 계정이 연결되었습니다.</p>
+    <p>후원 수신 상태: <strong>{status}</strong></p>
+    <p class="hint">이 페이지를 북마크해 두시면 같은 이름으로 다시 연결할 수 있습니다.</p>
+  </div>"""
+    elif oauth_uid:
+        st = _streamer_status(oauth_uid)
+        if st:
+            auth = f"/auth/chzzk?uid={oauth_uid}"
+            reconnect = f"""
+  <div class="card">
+    <p><strong>{st["display_name"]}</strong> — 상태: {st["listener_status"]}</p>
+    <p><a class="btn" href="{auth}">치지직 다시 연결</a></p>
+  </div>"""
 
     return f"""
 <!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>치지직 후원 테스트 (다중 스트리머)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>치지직 후원 연동</title>
   <style>
-    body {{ font-family: sans-serif; max-width: 960px; margin: 2rem auto; line-height: 1.6; }}
-    code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }}
+    body {{ font-family: sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }}
+    h1 {{ font-size: 1.35rem; }}
+    .card {{ background: #f8f9fa; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }}
+    .ok {{ border-left: 4px solid #0a7; }}
+    label {{ display: block; margin-bottom: 0.35rem; font-weight: 600; }}
+    input[type=text] {{ width: 100%; padding: 0.6rem; font-size: 1rem; box-sizing: border-box; }}
+    .btn {{ display: inline-block; background: #03c75a; color: #fff; padding: 0.65rem 1.2rem;
+            border-radius: 6px; text-decoration: none; font-weight: 600; border: none; cursor: pointer;
+            font-size: 1rem; }}
+    .hint {{ color: #666; font-size: 0.9rem; }}
+    ol {{ padding-left: 1.2rem; }}
+  </style>
+</head>
+<body>
+  <h1>치지직 후원 연동</h1>
+  <p>마인크래프트 서버와 연동하려면 치지직 계정을 연결하세요.</p>
+  {banner}
+  {reconnect}
+  <div class="card">
+    <form method="post" action="/connect">
+      <label for="display_name">치지직 닉네임 (표시 이름)</label>
+      <input id="display_name" name="display_name" type="text" required maxlength="100"
+             placeholder="예: 내방송닉네임" />
+      <p class="hint" style="margin-top:0.75rem">처음이면 등록되고, 같은 이름이면 기존 연결을 이어갑니다.</p>
+      <p style="margin-top:1rem"><button class="btn" type="submit">치지직 연결하기</button></p>
+    </form>
+  </div>
+  <ol class="hint">
+    <li>위 버튼 → 치지직 로그인</li>
+    <li>로그인 시 <strong>후원 조회</strong> 권한 허용</li>
+    <li>본인 채널로 들어오는 후원이 연동됩니다</li>
+  </ol>
+</body>
+</html>
+"""
+
+
+def _admin_html(streamers: list[dict[str, Any]], redirect_ok: bool) -> str:
+    rows = ""
+    for s in streamers:
+        uid = s["streamer_uid"]
+        auth = f'/auth/chzzk?uid={uid}'
+        reset = f'/streamers/{uid}/auth/reset'
+        rows += f"""
+        <tr>
+          <td><code>{uid}</code></td>
+          <td>{s["display_name"]}</td>
+          <td>{s["listener_status"]}</td>
+          <td>{'✓' if s["has_token"] else '—'}</td>
+          <td><a href="{auth}">OAuth</a></td>
+          <td><a href="/donations?streamer_uid={uid}">후원</a></td>
+          <td><code>POST {reset}</code></td>
+        </tr>"""
+
+    if not rows:
+        rows = '<tr><td colspan="7">등록된 스트리머 없음</td></tr>'
+
+    return f"""
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>관리 — 치지직 후원</title>
+  <style>
+    body {{ font-family: sans-serif; max-width: 1100px; margin: 2rem auto; line-height: 1.6; }}
+    code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; }}
     table {{ border-collapse: collapse; width: 100%; }}
     th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
     .ok {{ color: #0a7; }} .warn {{ color: #c80; }}
   </style>
 </head>
 <body>
-  <h1>치지직 후원 API 테스트 (다중 스트리머)</h1>
-  {oauth_banner}
+  <h1>관리자 (개발용)</h1>
+  <p><a href="/">← 스트리머 연동 페이지</a></p>
   <p>Redirect URI: <code>{REDIRECT_URI}</code>
-    <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '경로 확인'}</span></p>
-  <h2>스트리머</h2>
+    <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '확인 필요'}</span></p>
   <table>
-    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th></th></tr>
+    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>초기화</th></tr>
     {rows}
   </table>
-  <h2>등록</h2>
-  <pre>curl -X POST {REDIRECT_URI.split('/auth')[0]}/streamers \\
-  -H "Content-Type: application/json" \\
-  -d '{{"display_name":"스트리머A"}}'</pre>
   <p><a href="/status">/status</a> · <a href="/streamers">/streamers</a> · <a href="/donations">/donations</a></p>
 </body>
 </html>
@@ -269,9 +335,25 @@ async def index(
         return await _handle_oauth_callback(code, state, error)
     if error:
         raise HTTPException(400, f"OAuth 실패: {error}")
+    return HTMLResponse(_streamer_landing_html(oauth or "", uid or ""))
+
+
+@app.get("/admin")
+async def admin_page() -> HTMLResponse:
     return HTMLResponse(
-        _index_html(listener_manager.statuses(), _redirect_uri_ok(), oauth or "", uid or "")
+        _admin_html(listener_manager.statuses(), _redirect_uri_ok())
     )
+
+
+@app.post("/connect")
+async def streamer_connect(display_name: str = Form(...)) -> RedirectResponse:
+    """스트리머 자가 등록 → OAuth로 이동."""
+    name = display_name.strip()
+    if not name:
+        raise HTTPException(400, "닉네임을 입력하세요.")
+    streamer, _created = streamer_store.get_or_create(name)
+    listener_manager.start(streamer.uid)
+    return RedirectResponse(f"/auth/chzzk?uid={streamer.uid}", status_code=303)
 
 
 @app.post("/streamers")
