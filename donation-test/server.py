@@ -1,10 +1,11 @@
 """
-치지직 후원 API 테스트 서버.
+치지직 후원 API 테스트 서버 (다중 스트리머 uid).
 
 1. .env 에 Client ID/Secret 설정
 2. python server.py
-3. 브라우저에서 http://localhost:3000/auth/chzzk
-4. 치지직 로그인 후 후원이 오면 콘솔/GET /donations 에 표시
+3. POST /streamers 로 스트리머 등록 → uid 발급
+4. GET /auth/chzzk?uid=<uid> OAuth
+5. 본인 채널 후원 → GET /donations?streamer_uid=<uid>
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
 from chzzk_api import (
     ChzzkApiError,
@@ -30,8 +32,9 @@ from chzzk_api import (
     refresh_access_token,
     revoke_token_sync,
 )
-from donation_listener import DonationListener
 from donation_store import DonationStore
+from listener_manager import DonationListenerManager
+from streamer_store import StreamerStore
 
 load_dotenv()
 
@@ -46,6 +49,7 @@ CLIENT_SECRET = os.getenv("CHZZK_CLIENT_SECRET", "")
 REDIRECT_URI = os.getenv("CHZZK_REDIRECT_URI", "http://localhost:3000/auth/chzzk/callback")
 PORT = int(os.getenv("PORT", "3000"))
 TOKEN_FILE = Path(os.getenv("TOKEN_FILE", "data/tokens.json"))
+STREAMERS_DB = Path(os.getenv("STREAMERS_DB", "data/streamers.db"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 SQLITE_PATH = Path(os.getenv("SQLITE_PATH", "data/donations.db"))
 DONATION_LIST_LIMIT = int(os.getenv("DONATION_LIST_LIMIT", "50"))
@@ -53,94 +57,99 @@ STATE_FILE = Path(os.getenv("OAUTH_STATE_FILE", "data/oauth_states.json"))
 STATE_TTL_SEC = int(os.getenv("OAUTH_STATE_TTL_SEC", "600"))
 
 oauth_states: set[str] = set()
-_tokens: dict[str, Any] = {}
 
-app = FastAPI(title="Chzzk Donation Test Server")
+app = FastAPI(title="Chzzk Donation Test Server (multi-streamer)")
 
 EXPECTED_CALLBACK_SUFFIX = "/auth/chzzk/callback"
 
 
-def _load_oauth_states() -> dict[str, float]:
+class StreamerCreateBody(BaseModel):
+    display_name: str = Field(min_length=1, max_length=100)
+
+
+def _load_oauth_states() -> dict[str, dict[str, Any]]:
     if not STATE_FILE.exists():
         return {}
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return {k: float(v) for k, v in data.items()}
-    except (json.JSONDecodeError, TypeError, ValueError):
+        raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
         return {}
+    if isinstance(raw, dict) and raw and all(isinstance(v, (int, float)) for v in raw.values()):
+        return {k: {"created_at": float(v), "streamer_uid": ""} for k, v in raw.items()}
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for state, meta in raw.items():
+        if isinstance(meta, dict):
+            result[state] = {
+                "created_at": float(meta.get("created_at", 0)),
+                "streamer_uid": str(meta.get("streamer_uid", "")),
+            }
+        elif isinstance(meta, (int, float)):
+            result[state] = {"created_at": float(meta), "streamer_uid": ""}
+    return result
 
 
-def _save_oauth_states(states: dict[str, float]) -> None:
+def _save_oauth_states(states: dict[str, dict[str, Any]]) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(states, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _prune_oauth_states(states: dict[str, float]) -> dict[str, float]:
+def _prune_oauth_states(states: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     now = time.time()
-    return {k: v for k, v in states.items() if now - v <= STATE_TTL_SEC}
+    return {
+        k: v
+        for k, v in states.items()
+        if now - float(v.get("created_at", 0)) <= STATE_TTL_SEC
+    }
 
 
-def _register_oauth_state(state: str) -> None:
+def _register_oauth_state(state: str, streamer_uid: str) -> None:
     oauth_states.add(state)
     states = _prune_oauth_states(_load_oauth_states())
-    states[state] = time.time()
+    states[state] = {"created_at": time.time(), "streamer_uid": streamer_uid}
     _save_oauth_states(states)
 
 
-def _consume_oauth_state(state: str) -> bool:
+def _consume_oauth_state(state: str) -> str | None:
     states = _prune_oauth_states(_load_oauth_states())
-    if state not in states and state not in oauth_states:
-        return False
-    states.pop(state, None)
+    meta = states.pop(state, None)
     oauth_states.discard(state)
     _save_oauth_states(states)
-    return True
+    if not meta:
+        return None
+    uid = str(meta.get("streamer_uid", "")).strip()
+    return uid or None
 
 
 def _redirect_uri_ok() -> bool:
     return REDIRECT_URI.rstrip("/").endswith(EXPECTED_CALLBACK_SUFFIX)
 
 
-def _load_tokens() -> dict[str, Any] | None:
-    if TOKEN_FILE.exists():
-        try:
-            return json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return None
-    return None
-
-
-def _save_tokens(data: dict[str, Any]) -> None:
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    _tokens.clear()
-    _tokens.update(data)
-
-
-def _get_tokens() -> dict[str, Any] | None:
-    if _tokens:
-        return _tokens
-    loaded = _load_tokens()
-    if loaded:
-        _tokens.update(loaded)
-    return loaded or None
-
-
+streamer_store = StreamerStore(STREAMERS_DB)
 donation_store = DonationStore(redis_url=REDIS_URL, sqlite_path=SQLITE_PATH)
 
-listener = DonationListener(
+
+def _on_channel_id(streamer_uid: str, channel_id: str) -> None:
+    streamer_store.update_channel_id(streamer_uid, channel_id)
+
+
+listener_manager = DonationListenerManager(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET,
-    get_tokens=_get_tokens,
-    save_tokens=_save_tokens,
+    streamer_store=streamer_store,
+    donation_store=donation_store,
     refresh_tokens=refresh_access_token,
-    store=donation_store,
+    on_channel_id=_on_channel_id,
 )
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    _get_tokens()
+    migrated = streamer_store.import_legacy_tokens(TOKEN_FILE)
+    if migrated:
+        logger.info("레거시 tokens.json → streamer uid=%s 로 마이그레이션", migrated[:8])
+
     if not _redirect_uri_ok():
         logger.warning(
             "CHZZK_REDIRECT_URI가 콜백 경로와 다릅니다. "
@@ -153,8 +162,8 @@ async def startup() -> None:
         logger.info("Redis 연결 OK · 큐 워커 시작")
     except Exception as exc:
         logger.error("Redis 연결 실패 — redis-server 실행 여부 확인: %s", exc)
-    listener.start()
-    logger.info("후원 리스너 백그라운드 시작")
+    listener_manager.start_all()
+    logger.info("후원 리스너 매니저 시작 (스트리머 %d명)", len(streamer_store.list_all()))
 
 
 async def _handle_oauth_callback(
@@ -166,71 +175,83 @@ async def _handle_oauth_callback(
         logger.error("OAuth provider error: %s", error)
         raise HTTPException(400, f"OAuth 실패: {error}")
     if not code or not state:
-        logger.error("OAuth callback missing code/state (redirect_uri=%s)", REDIRECT_URI)
-        raise HTTPException(
-            400,
-            f"code 또는 state 가 없습니다. CHZZK_REDIRECT_URI가 "
-            f"'{REDIRECT_URI}' 인지, 치지직 콘솔과 동일한지 확인하세요.",
-        )
-    if not _consume_oauth_state(state):
-        logger.error("OAuth state mismatch (redirect_uri=%s)", REDIRECT_URI)
-        raise HTTPException(
-            400,
-            "state 불일치 — /auth/chzzk 부터 다시 시작하세요. (서버 재시작 직후면 다시 로그인)",
-        )
+        raise HTTPException(400, "code 또는 state 가 없습니다.")
+    streamer_uid = _consume_oauth_state(state)
+    if not streamer_uid:
+        raise HTTPException(400, "state 불일치 — /auth/chzzk?uid=... 부터 다시 시작하세요.")
+    if not streamer_store.get(streamer_uid):
+        raise HTTPException(400, f"스트리머 없음: {streamer_uid}")
 
     try:
         token_data = await exchange_code(CLIENT_ID, CLIENT_SECRET, code, state)
     except ChzzkApiError as exc:
-        logger.error("Token exchange failed: %s payload=%s", exc, exc.payload)
-        raise HTTPException(
-            400,
-            f"토큰 발급 실패: {exc}. Redirect URI가 콘솔·.env와 동일한지 확인하세요. (현재: {REDIRECT_URI})",
-        ) from exc
+        raise HTTPException(400, f"토큰 발급 실패: {exc}") from exc
 
-    _save_tokens(
+    streamer_store.save_tokens(
+        streamer_uid,
         {
             "access_token": token_data["accessToken"],
             "refresh_token": token_data["refreshToken"],
             "token_type": token_data.get("tokenType", "Bearer"),
             "expires_in": int(token_data.get("expiresIn", 86400)),
-        }
+        },
     )
-    logger.info("OAuth 완료 — 후원 리스너가 세션을 연결합니다.")
-    listener.start()
-    return RedirectResponse("/?oauth=ok")
+    logger.info("OAuth 완료 uid=%s — 리스너 연결", streamer_uid[:8])
+    listener_manager.start(streamer_uid)
+    return RedirectResponse(f"/?oauth=ok&uid={streamer_uid}")
 
 
-def _index_html(has_token: bool, redirect_ok: bool, oauth_msg: str = "") -> str:
+def _index_html(streamers: list[dict[str, Any]], redirect_ok: bool, oauth_msg: str, oauth_uid: str) -> str:
     oauth_banner = ""
-    if oauth_msg == "ok":
-        oauth_banner = '<p class="ok"><strong>OAuth 연결 완료!</strong></p>'
+    if oauth_msg == "ok" and oauth_uid:
+        oauth_banner = f'<p class="ok"><strong>OAuth 연결 완료!</strong> uid=<code>{oauth_uid}</code></p>'
+
+    rows = ""
+    for s in streamers:
+        uid = s["streamer_uid"]
+        auth = f'/auth/chzzk?uid={uid}'
+        rows += f"""
+        <tr>
+          <td><code>{uid[:8]}…</code></td>
+          <td>{s["display_name"]}</td>
+          <td>{s["listener_status"]}</td>
+          <td>{'✓' if s["has_token"] else '—'}</td>
+          <td><a href="{auth}">OAuth</a></td>
+          <td><a href="/donations?streamer_uid={uid}">후원</a></td>
+        </tr>"""
+
+    if not rows:
+        rows = '<tr><td colspan="6">스트리머 없음 — POST /streamers 로 등록</td></tr>'
+
     return f"""
 <!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>치지직 후원 테스트</title>
+  <title>치지직 후원 테스트 (다중 스트리머)</title>
   <style>
-    body {{ font-family: sans-serif; max-width: 720px; margin: 2rem auto; line-height: 1.6; }}
+    body {{ font-family: sans-serif; max-width: 960px; margin: 2rem auto; line-height: 1.6; }}
     code {{ background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }}
+    table {{ border-collapse: collapse; width: 100%; }}
+    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
     .ok {{ color: #0a7; }} .warn {{ color: #c80; }}
   </style>
 </head>
 <body>
-  <h1>치지직 후원 API 테스트</h1>
+  <h1>치지직 후원 API 테스트 (다중 스트리머)</h1>
   {oauth_banner}
-  <p>상태: <strong>{listener.status}</strong></p>
-  <p>OAuth: <span class="{'ok' if has_token else 'warn'}">{'연결됨' if has_token else '미연결'}</span></p>
   <p>Redirect URI: <code>{REDIRECT_URI}</code>
-    <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '경로 확인 필요 (/auth/chzzk/callback)'}</span></p>
-  <ol>
-    <li>치지직 앱 로그인 리디렉션 URL = 위 Redirect URI와 <strong>완전 동일</strong></li>
-    <li>Scope에 <strong>후원 조회</strong> 체크</li>
-    <li><a href="/auth/chzzk">치지직 로그인 (OAuth)</a></li>
-    <li>본인 채널에 후원 테스트</li>
-  </ol>
-  <p><a href="/status">/status</a> · <a href="/donations">/donations</a> · <a href="/donations/recent">/donations/recent</a></p>
+    <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '경로 확인'}</span></p>
+  <h2>스트리머</h2>
+  <table>
+    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th></th></tr>
+    {rows}
+  </table>
+  <h2>등록</h2>
+  <pre>curl -X POST {REDIRECT_URI.split('/auth')[0]}/streamers \\
+  -H "Content-Type: application/json" \\
+  -d '{{"display_name":"스트리머A"}}'</pre>
+  <p><a href="/status">/status</a> · <a href="/streamers">/streamers</a> · <a href="/donations">/donations</a></p>
 </body>
 </html>
 """
@@ -242,29 +263,73 @@ async def index(
     state: str | None = None,
     error: str | None = None,
     oauth: str | None = None,
+    uid: str | None = None,
 ):
-    # 치지직 콘솔 Redirect URI가 루트(/)인 경우: /?code=...&state=... 로 돌아옴
     if code and state:
-        logger.info("OAuth callback on / (redirect_uri=%s)", REDIRECT_URI)
         return await _handle_oauth_callback(code, state, error)
     if error:
         raise HTTPException(400, f"OAuth 실패: {error}")
+    return HTMLResponse(
+        _index_html(listener_manager.statuses(), _redirect_uri_ok(), oauth or "", uid or "")
+    )
 
-    tokens = _get_tokens()
-    has_token = bool(tokens and tokens.get("access_token"))
-    redirect_ok = _redirect_uri_ok()
-    return HTMLResponse(_index_html(has_token, redirect_ok, oauth or ""))
+
+@app.post("/streamers")
+async def create_streamer(body: StreamerCreateBody) -> dict[str, Any]:
+    streamer = streamer_store.create(body.display_name)
+    listener_manager.start(streamer.uid)
+    return {
+        "streamer_uid": streamer.uid,
+        "display_name": streamer.display_name,
+        "oauth_url": f"/auth/chzzk?uid={streamer.uid}",
+        "message": "OAuth URL로 스트리머 본인 계정 로그인",
+    }
+
+
+@app.get("/streamers")
+async def list_streamers() -> dict[str, Any]:
+    return {"count": len(listener_manager.statuses()), "streamers": listener_manager.statuses()}
+
+
+@app.get("/streamers/{streamer_uid}")
+async def get_streamer(streamer_uid: str) -> dict[str, Any]:
+    streamer = streamer_store.get(streamer_uid)
+    if not streamer:
+        raise HTTPException(404, "스트리머 없음")
+    status = next(
+        (s for s in listener_manager.statuses() if s["streamer_uid"] == streamer_uid),
+        None,
+    )
+    return {
+        "streamer_uid": streamer.uid,
+        "display_name": streamer.display_name,
+        "chzzk_channel_id": streamer.chzzk_channel_id,
+        "has_token": streamer.has_token,
+        "listener": status,
+        "oauth_url": f"/auth/chzzk?uid={streamer.uid}",
+    }
+
+
+@app.delete("/streamers/{streamer_uid}")
+async def delete_streamer(streamer_uid: str) -> dict[str, str]:
+    if not streamer_store.get(streamer_uid):
+        raise HTTPException(404, "스트리머 없음")
+    listener_manager.stop(streamer_uid)
+    streamer_store.delete(streamer_uid)
+    return {"message": f"삭제됨: {streamer_uid}"}
 
 
 @app.get("/auth/chzzk")
-async def auth_chzzk() -> RedirectResponse:
+async def auth_chzzk(uid: str = Query(..., description="POST /streamers 로 발급받은 uid")) -> RedirectResponse:
     if not CLIENT_ID or not CLIENT_SECRET:
         raise HTTPException(500, "CHZZK_CLIENT_ID / CHZZK_CLIENT_SECRET 을 .env 에 설정하세요.")
+    if not streamer_store.get(uid):
+        raise HTTPException(404, f"스트리머 없음: {uid}")
 
     state = new_oauth_state()
-    _register_oauth_state(state)
+    _register_oauth_state(state, uid)
     url = build_auth_url(CLIENT_ID, REDIRECT_URI, state)
-    logger.info("OAuth 시작 redirect_uri=%s", REDIRECT_URI)
+    logger.info("OAuth 시작 uid=%s", uid[:8])
     return RedirectResponse(url)
 
 
@@ -275,30 +340,34 @@ async def auth_callback(code: str | None = None, state: str | None = None, error
 
 @app.get("/status")
 async def status() -> dict[str, Any]:
-    tokens = _get_tokens()
-    storage = donation_store.stats()
+    streamers = listener_manager.statuses()
+    listening = sum(1 for s in streamers if s["listener_status"] == "listening")
     return {
-        "listener_status": listener.status,
-        "session_key": listener.session_key,
-        "last_error": listener.last_error,
-        "has_access_token": bool(tokens and tokens.get("access_token")),
+        "streamer_count": len(streamers),
+        "listening_count": listening,
+        "streamers": streamers,
         "redirect_uri": REDIRECT_URI,
         "redirect_uri_ok": _redirect_uri_ok(),
-        "expected_redirect_uri_suffix": EXPECTED_CALLBACK_SUFFIX,
-        "storage": storage,
+        "storage": donation_store.stats(),
     }
 
 
 @app.get("/donations")
 async def donations(
+    streamer_uid: str | None = Query(default=None),
     limit: int = Query(default=DONATION_LIST_LIMIT, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
-    items = donation_store.sqlite.list_recent(limit=limit, offset=offset)
+    if streamer_uid and not streamer_store.get(streamer_uid):
+        raise HTTPException(404, "스트리머 없음")
+    items = donation_store.sqlite.list_recent(
+        limit=limit, offset=offset, streamer_uid=streamer_uid
+    )
     return {
         "source": "sqlite",
+        "streamer_uid": streamer_uid,
         "count": len(items),
-        "total": donation_store.sqlite.count(),
+        "total": donation_store.sqlite.count(streamer_uid=streamer_uid),
         "queue_pending": donation_store.queue.queue_length(),
         "donations": items,
     }
@@ -306,11 +375,15 @@ async def donations(
 
 @app.get("/donations/recent")
 async def donations_recent(
+    streamer_uid: str | None = Query(default=None),
     limit: int = Query(default=DONATION_LIST_LIMIT, ge=1, le=200),
 ) -> dict[str, Any]:
     records = donation_store.queue.recent(limit=limit)
+    if streamer_uid:
+        records = [r for r in records if r.streamer_uid == streamer_uid]
     items = [
         {
+            "streamer_uid": r.streamer_uid,
             "received_at": r.received_at,
             "donator_nickname": r.donator_nickname,
             "pay_amount": r.pay_amount,
@@ -323,6 +396,7 @@ async def donations_recent(
     ]
     return {
         "source": "redis",
+        "streamer_uid": streamer_uid,
         "count": len(items),
         "queue_pending": donation_store.queue.queue_length(),
         "donations": items,
@@ -330,19 +404,29 @@ async def donations_recent(
 
 
 @app.post("/listener/restart")
-async def restart_listener() -> dict[str, str]:
-    listener.stop()
+async def restart_all_listeners() -> dict[str, str]:
+    listener_manager.restart_all()
     donation_store.stop_worker()
     donation_store.start_worker()
-    listener.start()
-    return {"message": "listener and queue worker restarted"}
+    return {"message": "모든 리스너 + 큐 워커 재시작"}
 
 
-@app.post("/auth/reset")
-async def auth_reset() -> dict[str, Any]:
-    """로컬 토큰·OAuth state 삭제 + (가능하면) 치지직 토큰 revoke."""
-    listener.stop()
-    tokens = _get_tokens()
+@app.post("/streamers/{streamer_uid}/listener/restart")
+async def restart_streamer_listener(streamer_uid: str) -> dict[str, str]:
+    if not streamer_store.get(streamer_uid):
+        raise HTTPException(404, "스트리머 없음")
+    listener_manager.restart(streamer_uid)
+    return {"message": f"리스너 재시작: {streamer_uid}"}
+
+
+@app.post("/streamers/{streamer_uid}/auth/reset")
+async def reset_streamer_auth(streamer_uid: str) -> dict[str, Any]:
+    streamer = streamer_store.get(streamer_uid)
+    if not streamer:
+        raise HTTPException(404, "스트리머 없음")
+
+    listener_manager.stop(streamer_uid)
+    tokens = streamer_store.get_tokens(streamer_uid)
     revoked = False
     revoke_error: str | None = None
     sessions_before: Any = None
@@ -353,26 +437,17 @@ async def auth_reset() -> dict[str, Any]:
         except Exception as exc:
             logger.warning("세션 목록 조회 실패: %s", exc)
         try:
-            revoke_token_sync(
-                CLIENT_ID,
-                CLIENT_SECRET,
-                tokens["access_token"],
-            )
+            revoke_token_sync(CLIENT_ID, CLIENT_SECRET, tokens["access_token"])
             revoked = True
         except Exception as exc:
             revoke_error = str(exc)
-            logger.warning("토큰 revoke 실패: %s", exc)
 
-    _tokens.clear()
-    for path in (TOKEN_FILE, STATE_FILE):
-        if path.exists():
-            path.unlink()
-
-    oauth_states.clear()
-    listener.start()
+    streamer_store.clear_tokens(streamer_uid)
+    listener_manager.start(streamer_uid)
 
     return {
-        "message": "로컬 OAuth/세션 state 초기화 완료. /auth/chzzk 로 다시 로그인하세요.",
+        "message": f"OAuth 초기화 — /auth/chzzk?uid={streamer_uid} 로 다시 로그인",
+        "streamer_uid": streamer_uid,
         "token_revoked": revoked,
         "revoke_error": revoke_error,
         "sessions_before_reset": sessions_before,

@@ -22,6 +22,7 @@ DEFAULT_RECENT_SIZE = 50
 
 @dataclass
 class DonationRecord:
+    streamer_uid: str
     received_at: str
     donator_nickname: str
     pay_amount: str
@@ -38,6 +39,7 @@ class DonationRecord:
     def from_json(cls, payload: str) -> DonationRecord:
         data = json.loads(payload)
         return cls(
+            streamer_uid=data.get("streamer_uid", ""),
             received_at=data["received_at"],
             donator_nickname=data["donator_nickname"],
             pay_amount=data["pay_amount"],
@@ -50,6 +52,7 @@ class DonationRecord:
 
     def to_row(self) -> dict[str, Any]:
         return {
+            "streamer_uid": self.streamer_uid,
             "received_at": self.received_at,
             "donator_nickname": self.donator_nickname,
             "pay_amount": self.pay_amount,
@@ -110,6 +113,7 @@ class SQLiteDonationStore:
                 """
                 CREATE TABLE IF NOT EXISTS donations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    streamer_uid TEXT NOT NULL DEFAULT '',
                     received_at TEXT NOT NULL,
                     donator_nickname TEXT NOT NULL,
                     pay_amount TEXT NOT NULL,
@@ -122,10 +126,22 @@ class SQLiteDonationStore:
                 )
                 """
             )
+            self._ensure_column(conn, "donations", "streamer_uid", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_donations_received_at ON donations(received_at DESC)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_donations_streamer ON donations(streamer_uid, id DESC)"
+            )
             conn.commit()
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection, table: str, column: str, definition: str
+    ) -> None:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def insert(self, record: DonationRecord) -> int:
         row = record.to_row()
@@ -133,10 +149,10 @@ class SQLiteDonationStore:
             cur = conn.execute(
                 """
                 INSERT INTO donations (
-                    received_at, donator_nickname, pay_amount, donation_text,
+                    streamer_uid, received_at, donator_nickname, pay_amount, donation_text,
                     donation_type, channel_id, donator_channel_id, raw_json
                 ) VALUES (
-                    :received_at, :donator_nickname, :pay_amount, :donation_text,
+                    :streamer_uid, :received_at, :donator_nickname, :pay_amount, :donation_text,
                     :donation_type, :channel_id, :donator_channel_id, :raw_json
                 )
                 """,
@@ -145,23 +161,47 @@ class SQLiteDonationStore:
             conn.commit()
             return int(cur.lastrowid)
 
-    def list_recent(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    def list_recent(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        streamer_uid: str | None = None,
+    ) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, received_at, donator_nickname, pay_amount, donation_text,
-                       donation_type, channel_id, donator_channel_id, created_at
-                FROM donations
-                ORDER BY id DESC
-                LIMIT ? OFFSET ?
-                """,
-                (limit, offset),
-            ).fetchall()
+            if streamer_uid:
+                rows = conn.execute(
+                    """
+                    SELECT id, streamer_uid, received_at, donator_nickname, pay_amount,
+                           donation_text, donation_type, channel_id, donator_channel_id, created_at
+                    FROM donations
+                    WHERE streamer_uid = ?
+                    ORDER BY id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (streamer_uid, limit, offset),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, streamer_uid, received_at, donator_nickname, pay_amount,
+                           donation_text, donation_type, channel_id, donator_channel_id, created_at
+                    FROM donations
+                    ORDER BY id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (limit, offset),
+                ).fetchall()
         return [dict(row) for row in rows]
 
-    def count(self) -> int:
+    def count(self, streamer_uid: str | None = None) -> int:
         with self._connect() as conn:
-            row = conn.execute("SELECT COUNT(*) AS cnt FROM donations").fetchone()
+            if streamer_uid:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM donations WHERE streamer_uid = ?",
+                    (streamer_uid,),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS cnt FROM donations").fetchone()
         return int(row["cnt"]) if row else 0
 
 
@@ -209,8 +249,9 @@ class DonationConsumer:
                 self._processed += 1
                 self._last_error = None
                 logger.info(
-                    "SQLite 저장 #%s: %s / %s원",
+                    "SQLite 저장 #%s [%s]: %s / %s원",
                     donation_id,
+                    record.streamer_uid[:8] if record.streamer_uid else "?",
                     record.donator_nickname,
                     record.pay_amount,
                 )
@@ -255,6 +296,7 @@ class DonationStore:
 def donation_record_from_event(event: Any) -> DonationRecord:
     """DonationEvent → DonationRecord."""
     return DonationRecord(
+        streamer_uid=event.streamer_uid,
         received_at=event.received_at,
         donator_nickname=event.donator_nickname,
         pay_amount=event.pay_amount,
@@ -266,8 +308,9 @@ def donation_record_from_event(event: Any) -> DonationRecord:
     )
 
 
-def donation_record_now(payload: dict[str, Any]) -> DonationRecord:
+def donation_record_now(payload: dict[str, Any], *, streamer_uid: str = "") -> DonationRecord:
     return DonationRecord(
+        streamer_uid=streamer_uid,
         received_at=datetime.now(timezone.utc).isoformat(),
         donator_nickname=str(payload.get("donatorNickname", "")),
         pay_amount=str(payload.get("payAmount", "")),

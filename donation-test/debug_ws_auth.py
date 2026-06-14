@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,21 +19,18 @@ from chzzk_ws import (
     extract_auth_token,
     trace_session_packets,
 )
-
-TOKEN_FILE = Path("data/tokens.json")
+from token_loader import load_access_token
 
 
 def main() -> int:
     print(f"chzzk_ws 버전: {WS_MODULE_VERSION}")
 
-    if not TOKEN_FILE.exists():
-        print("❌ data/tokens.json 없음 — OAuth 먼저")
+    try:
+        token, uid = load_access_token()
+    except SystemExit as exc:
+        print(f"❌ {exc}")
         return 1
-
-    token = json.loads(TOKEN_FILE.read_text(encoding="utf-8")).get("access_token")
-    if not token:
-        print("❌ access_token 없음")
-        return 1
+    print(f"스트리머: {uid}")
 
     session_url = get_session_url_sync(token)
     auth = extract_auth_token(session_url)

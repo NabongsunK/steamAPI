@@ -27,10 +27,11 @@ from chzzk_ws import (
     WS_MODULE_VERSION,
 )
 
+from token_loader import load_access_token
+
 load_dotenv()
 
 API_BASE = "https://openapi.chzzk.naver.com"
-TOKEN_FILE = Path(os.getenv("TOKEN_FILE", "data/tokens.json"))
 
 
 def _print_section(title: str) -> None:
@@ -87,22 +88,21 @@ def check_dependencies() -> bool:
     return ok
 
 
-def _load_token() -> str | None:
-    if not TOKEN_FILE.exists():
+def _load_token() -> tuple[str, str] | None:
+    try:
+        return load_access_token()
+    except SystemExit:
         return None
-    data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-    return data.get("access_token")
 
 
 def check_token_file() -> str | None:
-    _print_section("1) 로컬 토큰 (data/tokens.json)")
-    if not TOKEN_FILE.exists():
-        print("❌ 없음 → https://wwmw.shop/auth/chzzk 로 OAuth 먼저")
+    _print_section("1) OAuth 토큰 (streamers DB / legacy tokens.json)")
+    loaded = _load_token()
+    if not loaded:
+        print("❌ 없음 → POST /streamers 후 /auth/chzzk?uid=...")
         return None
-    data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-    token = data.get("access_token", "")
-    print(f"✅ access_token 앞 20자: {token[:20]}...")
-    print(f"   expires_in: {data.get('expires_in')}")
+    token, uid = loaded
+    print(f"✅ streamer={uid}, access_token 앞 20자: {token[:20]}...")
     return token
 
 
