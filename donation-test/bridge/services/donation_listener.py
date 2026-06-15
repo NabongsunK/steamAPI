@@ -7,33 +7,20 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from chzzk_api import (
+from shared.chzzk.api import (
     ChzzkApiError,
     get_session_url_sync,
     list_user_sessions_sync,
     subscribe_donation_sync,
 )
-from chzzk_ws import ChzzkSessionClient, ChzzkWsAuthError
-from donation_store import DonationStore, donation_record_now
+from shared.chzzk.ws import ChzzkSessionClient, ChzzkWsAuthError
+from shared.models.events import DonationEvent
+from shared.repos.donation_repo import DonationRepo, donation_record_now
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class DonationEvent:
-    streamer_uid: str
-    received_at: str
-    donator_nickname: str
-    pay_amount: str
-    donation_text: str
-    donation_type: str
-    channel_id: str
-    donator_channel_id: str
-    raw: dict[str, Any] = field(repr=False)
 
 
 class DonationListener:
@@ -46,7 +33,7 @@ class DonationListener:
         get_tokens: Callable[[], dict[str, Any] | None],
         save_tokens: Callable[[dict[str, Any]], None],
         refresh_tokens: Callable[[str, str, str], Any],
-        store: DonationStore | None = None,
+        store: DonationRepo | None = None,
         on_donation: Callable[[DonationEvent], None] | None = None,
         on_channel_id: Callable[[str, str], None] | None = None,
     ):
@@ -138,7 +125,6 @@ class DonationListener:
         await asyncio.to_thread(self._run_socket_session, access_token)
 
     def _run_socket_session(self, access_token: str) -> None:
-        """WebSocket 세션 — URL 발급 직후 바로 연결 (URL 만료 방지)."""
         active = self._count_active_sessions(access_token)
         if active >= 3:
             raise RuntimeError(
@@ -247,31 +233,9 @@ class DonationListener:
             event.donation_text,
         )
         if self.store:
-            self.store.enqueue(
-                donation_record_now(payload, streamer_uid=self.streamer_uid)
-            )
+            self.store.enqueue(donation_record_now(payload, streamer_uid=self.streamer_uid))
         if self.on_donation:
             self.on_donation(event)
-
-    async def _refresh_access_token(self, tokens: dict[str, Any]) -> str:
-        if not tokens.get("refresh_token"):
-            raise ChzzkApiError("토큰 만료 — OAuth 다시 로그인하세요.")
-
-        refreshed = await self.refresh_tokens(
-            self.client_id,
-            self.client_secret,
-            tokens["refresh_token"],
-        )
-        tokens.update(
-            {
-                "access_token": refreshed["accessToken"],
-                "refresh_token": refreshed["refreshToken"],
-                "token_type": refreshed.get("tokenType", "Bearer"),
-                "expires_in": int(refreshed.get("expiresIn", 86400)),
-            }
-        )
-        self.save_tokens(tokens)
-        return tokens["access_token"]
 
     @staticmethod
     def _count_active_sessions(access_token: str) -> int:

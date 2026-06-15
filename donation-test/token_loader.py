@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from streamer_store import StreamerStore
+from shared.repos.streamer_repo import StreamerRepo
 
 TOKEN_FILE = Path(os.getenv("TOKEN_FILE", "data/tokens.json"))
 STREAMERS_DB = Path(os.getenv("STREAMERS_DB", "data/streamers.db"))
@@ -18,7 +18,7 @@ def load_access_token(streamer_uid: str | None = None) -> tuple[str, str]:
     우선순위: STREAMER_UID env → 인자 → streamers DB 첫 토큰 → legacy tokens.json
     """
     uid = streamer_uid or os.getenv("STREAMER_UID", "").strip()
-    store = StreamerStore(STREAMERS_DB)
+    store = StreamerRepo(STREAMERS_DB)
 
     if uid:
         tokens = store.get_tokens(uid)

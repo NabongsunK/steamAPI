@@ -19,12 +19,12 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-from chzzk_api import get_session_url_sync
-from chzzk_ws import (
+from shared.chzzk.api import get_session_url_sync
+from shared.chzzk.ws import (
+    WS_MODULE_VERSION,
     build_engineio_ws_url,
     parse_session_url,
     probe_session_connection,
-    WS_MODULE_VERSION,
 )
 
 from token_loader import load_access_token

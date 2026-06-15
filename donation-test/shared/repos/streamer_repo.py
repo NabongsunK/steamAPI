@@ -19,7 +19,7 @@ class Streamer:
     created_at: str
 
 
-class StreamerStore:
+class StreamerRepo:
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)

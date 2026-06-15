@@ -260,7 +260,7 @@ class DonationConsumer:
                 logger.exception("큐 처리 오류: %s", exc)
 
 
-class DonationStore:
+class DonationRepo:
     """리스너·API가 사용하는 통합 저장소."""
 
     def __init__(

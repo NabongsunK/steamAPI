@@ -6,36 +6,42 @@ import logging
 import threading
 from typing import Any, Callable
 
-from donation_listener import DonationListener
-from donation_store import DonationStore
-from streamer_store import StreamerStore
+from bridge.services.donation_listener import DonationListener
+from shared.models.events import DonationEvent
+from shared.repos.donation_repo import DonationRepo
+from shared.repos.streamer_repo import StreamerRepo
 
 logger = logging.getLogger(__name__)
 
 
-class DonationListenerManager:
+class IngestionService:
     def __init__(
         self,
         *,
         client_id: str,
         client_secret: str,
-        streamer_store: StreamerStore,
-        donation_store: DonationStore,
+        streamer_repo: StreamerRepo,
+        donation_repo: DonationRepo,
         refresh_tokens: Callable[..., Any],
         on_channel_id: Callable[[str, str], None] | None = None,
+        on_donation: Callable[[DonationEvent], None] | None = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
-        self.streamer_store = streamer_store
-        self.donation_store = donation_store
+        self.streamer_repo = streamer_repo
+        self.donation_repo = donation_repo
         self.refresh_tokens = refresh_tokens
         self._on_channel_id = on_channel_id
+        self._on_donation = on_donation
         self._listeners: dict[str, DonationListener] = {}
         self._lock = threading.Lock()
 
     def start_all(self) -> None:
-        for streamer in self.streamer_store.list_with_tokens():
+        for streamer in self.streamer_repo.list_with_tokens():
             self.start(streamer.uid)
+        for streamer in self.streamer_repo.list_all():
+            if not streamer.has_token:
+                self.start(streamer.uid)
 
     def start(self, streamer_uid: str) -> None:
         with self._lock:
@@ -48,11 +54,12 @@ class DonationListenerManager:
                 streamer_uid=streamer_uid,
                 client_id=self.client_id,
                 client_secret=self.client_secret,
-                get_tokens=lambda uid=streamer_uid: self.streamer_store.get_tokens(uid),
-                save_tokens=lambda data, uid=streamer_uid: self.streamer_store.save_tokens(uid, data),
+                get_tokens=lambda uid=streamer_uid: self.streamer_repo.get_tokens(uid),
+                save_tokens=lambda data, uid=streamer_uid: self.streamer_repo.save_tokens(uid, data),
                 refresh_tokens=self.refresh_tokens,
-                store=self.donation_store,
+                store=self.donation_repo,
                 on_channel_id=self._on_channel_id,
+                on_donation=self._on_donation,
             )
             self._listeners[streamer_uid] = listener
             listener.start()
@@ -82,7 +89,7 @@ class DonationListenerManager:
 
     def statuses(self) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        for streamer in self.streamer_store.list_all():
+        for streamer in self.streamer_repo.list_all():
             listener = self._listeners.get(streamer.uid)
             result.append(
                 {
