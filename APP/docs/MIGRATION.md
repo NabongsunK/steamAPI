@@ -1,4 +1,4 @@
-# donation-test 아키텍처 · 마이그레이션
+# 아키텍처 · 마이그레이션
 
 > AI/개발자용 단일 참조 문서. 구조 변경 시 이 파일을 먼저 갱신한다.
 
@@ -6,15 +6,15 @@
 
 기존 단일 `server.py`를 **두 프로세스**로 분리하고, 각 프로세스 안에서 **route → service → repo** 레이어를 유지한다.
 
-| 프로세스 | 포트 | 역할 | 공개 |
-|----------|------|------|------|
-| **portal** | 3000 | 스트리머 온보딩, OAuth, admin API, 후원 조회 | nginx → wwmw.shop |
+| 프로세스   | 포트 | 역할                                                         | 공개                      |
+| ---------- | ---- | ------------------------------------------------------------ | ------------------------- |
+| **portal** | 3000 | 스트리머 온보딩, OAuth, admin API, 후원 조회                 | nginx → wwmw.shop         |
 | **bridge** | 3001 | 치지직 WS 후원 수신, Redis/SQLite 저장, (예정) SteamAPI POST | `127.0.0.1` / Tailscale만 |
 
 ## 디렉터리 구조
 
 ```
-donation-test/
+APP/
 ├── docs/
 │   └── MIGRATION.md          # 이 문서
 ├── shared/                   # 두 프로세스 공통
@@ -59,11 +59,11 @@ donation-test/
 
 ## 레이어 규칙
 
-| 레이어 | 책임 | 금지 |
-|--------|------|------|
-| **routes** | HTTP 파싱, status code, Redirect | DB/WS 직접 접근 |
+| 레이어       | 책임                              | 금지                 |
+| ------------ | --------------------------------- | -------------------- |
+| **routes**   | HTTP 파싱, status code, Redirect  | DB/WS 직접 접근      |
 | **services** | 비즈니스 로직, repo·외부 API 조합 | FastAPI Request 의존 |
-| **repos** | SQLite/Redis CRUD | HTTP/HTML |
+| **repos**    | SQLite/Redis CRUD                 | HTTP/HTML            |
 
 **shared**는 route를 갖지 않는다. repo·모델·chzzk 클라이언트만.
 
@@ -83,14 +83,14 @@ donation-test/
 
 ## 프로세스 간 API (bridge internal)
 
-| 메서드 | 경로 | 호출 시점 |
-|--------|------|-----------|
-| `GET` | `/health` | 헬스체크 |
-| `GET` | `/internal/status` | portal `/status`, `/admin` |
-| `POST` | `/internal/listeners/{uid}/start` | connect, OAuth 완료, streamer 생성 |
-| `POST` | `/internal/listeners/{uid}/stop` | streamer 삭제, auth reset |
-| `POST` | `/internal/listeners/{uid}/restart` | 수동 재시작 |
-| `POST` | `/internal/listeners/restart-all` | 전체 재시작 |
+| 메서드 | 경로                                | 호출 시점                          |
+| ------ | ----------------------------------- | ---------------------------------- |
+| `GET`  | `/health`                           | 헬스체크                           |
+| `GET`  | `/internal/status`                  | portal `/status`, `/admin`         |
+| `POST` | `/internal/listeners/{uid}/start`   | connect, OAuth 완료, streamer 생성 |
+| `POST` | `/internal/listeners/{uid}/stop`    | streamer 삭제, auth reset          |
+| `POST` | `/internal/listeners/{uid}/restart` | 수동 재시작                        |
+| `POST` | `/internal/listeners/restart-all`   | 전체 재시작                        |
 
 기본 `BRIDGE_URL=http://127.0.0.1:3001`
 
@@ -98,37 +98,37 @@ donation-test/
 
 ### 공통 (shared)
 
-| 변수 | 기본값 |
-|------|--------|
-| `CHZZK_CLIENT_ID` | |
-| `CHZZK_CLIENT_SECRET` | |
-| `STREAMERS_DB` | `data/streamers.db` |
-| `REDIS_URL` | `redis://127.0.0.1:6379/0` |
-| `SQLITE_PATH` | `data/donations.db` |
-| `TOKEN_FILE` | `data/tokens.json` |
+| 변수                  | 기본값                     |
+| --------------------- | -------------------------- |
+| `CHZZK_CLIENT_ID`     |                            |
+| `CHZZK_CLIENT_SECRET` |                            |
+| `STREAMERS_DB`        | `data/streamers.db`        |
+| `REDIS_URL`           | `redis://127.0.0.1:6379/0` |
+| `SQLITE_PATH`         | `data/donations.db`        |
+| `TOKEN_FILE`          | `data/tokens.json`         |
 
 ### portal
 
-| 변수 | 기본값 |
-|------|--------|
-| `PORT` | `3000` |
+| 변수                 | 기본값                                      |
+| -------------------- | ------------------------------------------- |
+| `PORT`               | `3000`                                      |
 | `CHZZK_REDIRECT_URI` | `http://localhost:3000/auth/chzzk/callback` |
-| `BRIDGE_URL` | `http://127.0.0.1:3001` |
-| `OAUTH_STATE_FILE` | `data/oauth_states.json` |
+| `BRIDGE_URL`         | `http://127.0.0.1:3001`                     |
+| `OAUTH_STATE_FILE`   | `data/oauth_states.json`                    |
 
 ### bridge
 
-| 변수 | 기본값 |
-|------|--------|
-| `BRIDGE_PORT` | `3001` |
-| `STEAM_API_URL` | `http://127.0.0.1:4000` |
-| `STEAM_API_SECRET` | |
-| `BRIDGE_FORWARD_ENABLED` | `false` |
+| 변수                     | 기본값                  |
+| ------------------------ | ----------------------- |
+| `BRIDGE_PORT`            | `3001`                  |
+| `STEAM_API_URL`          | `http://127.0.0.1:4000` |
+| `STEAM_API_SECRET`       |                         |
+| `BRIDGE_FORWARD_ENABLED` | `false`                 |
 
 ## 실행 (맥미니)
 
 ```bash
-cd ~/steamAPI/donation-test
+cd ~/steamAPI/APP
 source .venv/bin/activate
 
 # 1) bridge 먼저
@@ -163,4 +163,4 @@ nginx/cloudflared는 **portal:3000**만 프록시. bridge 3001은 로컬 바인�
 ## 관련 문서
 
 - 루트 [README.md](../../README.md) — Bridge ↔ SteamAPI 전체 설계
-- [donation-test/README.md](../README.md) — 실행·API 사용법
+- [APP/README.md](../README.md) — 실행·API 사용법

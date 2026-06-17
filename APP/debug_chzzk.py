@@ -3,7 +3,7 @@
 치지직 API / WebSocket 단계별 확인 스크립트.
 
 사용:
-  cd donation-test
+  cd APP
   source .venv/bin/activate
   pip install -r requirements.txt
   python3 debug_chzzk.py

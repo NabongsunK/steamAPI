@@ -25,7 +25,7 @@
 ## 설치
 
 ```bash
-cd donation-test
+cd APP
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -36,17 +36,17 @@ cp .env.example .env
 
 ## 환경 변수
 
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `CHZZK_CLIENT_ID` | 앱 Client ID | |
-| `CHZZK_CLIENT_SECRET` | 앱 Client Secret | |
-| `CHZZK_REDIRECT_URI` | OAuth 콜백 | `http://localhost:3000/auth/chzzk/callback` |
-| `PORT` | portal 포트 | `3000` |
-| `BRIDGE_URL` | bridge 내부 URL | `http://127.0.0.1:3001` |
-| `BRIDGE_PORT` | bridge 포트 | `3001` |
-| `STREAMERS_DB` | 스트리머·토큰 DB | `data/streamers.db` |
-| `REDIS_URL` | Redis | `redis://127.0.0.1:6379/0` |
-| `SQLITE_PATH` | 후원 SQLite | `data/donations.db` |
+| 변수                  | 설명             | 기본값                                      |
+| --------------------- | ---------------- | ------------------------------------------- |
+| `CHZZK_CLIENT_ID`     | 앱 Client ID     |                                             |
+| `CHZZK_CLIENT_SECRET` | 앱 Client Secret |                                             |
+| `CHZZK_REDIRECT_URI`  | OAuth 콜백       | `http://localhost:3000/auth/chzzk/callback` |
+| `PORT`                | portal 포트      | `3000`                                      |
+| `BRIDGE_URL`          | bridge 내부 URL  | `http://127.0.0.1:3001`                     |
+| `BRIDGE_PORT`         | bridge 포트      | `3001`                                      |
+| `STREAMERS_DB`        | 스트리머·토큰 DB | `data/streamers.db`                         |
+| `REDIS_URL`           | Redis            | `redis://127.0.0.1:6379/0`                  |
+| `SQLITE_PATH`         | 후원 SQLite      | `data/donations.db`                         |
 
 ---
 
@@ -98,15 +98,15 @@ curl -X POST http://localhost:3000/listener/restart
 
 ## HTTP API (portal)
 
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| `GET` | `/` | 스트리머 랜딩 |
-| `POST` | `/connect` | 닉네임 등록 → OAuth |
-| `GET` | `/auth/chzzk?uid=` | OAuth 시작 |
-| `GET` | `/admin` | 관리 페이지 |
-| `GET` | `/status` | 상태 JSON |
-| `GET` | `/streamers` | 스트리머 목록 |
-| `GET` | `/donations` | SQLite 후원 목록 |
+| 메서드 | 경로                | 설명                      |
+| ------ | ------------------- | ------------------------- |
+| `GET`  | `/`                 | 스트리머 랜딩             |
+| `POST` | `/connect`          | 닉네임 등록 → OAuth       |
+| `GET`  | `/auth/chzzk?uid=`  | OAuth 시작                |
+| `GET`  | `/admin`            | 관리 페이지               |
+| `GET`  | `/status`           | 상태 JSON                 |
+| `GET`  | `/streamers`        | 스트리머 목록             |
+| `GET`  | `/donations`        | SQLite 후원 목록          |
 | `POST` | `/listener/restart` | bridge 리스너 재시작 요청 |
 
 ---
@@ -114,7 +114,7 @@ curl -X POST http://localhost:3000/listener/restart
 ## 파일 구조
 
 ```
-donation-test/
+APP/
 ├── docs/MIGRATION.md
 ├── shared/          # repos, chzzk 클라이언트, 모델
 ├── portal/          # OAuth · admin (:3000)

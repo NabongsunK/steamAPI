@@ -2,7 +2,6 @@
 .env
 .env.local
 .env.*.local
-donation-test/setup-env.ps1
 
 # Python
 __pycache__/
@@ -17,7 +16,7 @@ venv/
 env/
 
 # 테스트·런타임 데이터
-donation-test/data/
+APP/data/
 *.log
 
 # Node (Bridge / SteamAPI 추가 시)
