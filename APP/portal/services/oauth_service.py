@@ -8,13 +8,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request, Request
 from fastapi.responses import RedirectResponse
 
 from shared.chzzk.api import ChzzkApiError, build_auth_url, exchange_code, new_oauth_state
 from shared.repos.streamer_repo import StreamerRepo
 
 from portal.config import PortalSettings
+from portal.session_util import set_streamer_uid
 from portal.services.bridge_client import BridgeClient
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class OAuthService:
 
     async def handle_callback(
         self,
+        request: Request,
         code: str | None,
         state: str | None,
         error: str | None,
@@ -101,7 +103,8 @@ class OAuthService:
         )
         logger.info("OAuth 완료 uid=%s — bridge 리스너 시작 요청", streamer_uid[:8])
         self._bridge.start_listener(streamer_uid)
-        return RedirectResponse(f"/?oauth=ok&uid={streamer_uid}")
+        set_streamer_uid(request, streamer_uid)
+        return RedirectResponse("/?oauth=ok")
 
     def _load(self) -> dict[str, dict[str, Any]]:
         if not self._state_file.exists():

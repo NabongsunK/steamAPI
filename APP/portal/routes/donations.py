@@ -6,7 +6,34 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from portal.session_util import get_streamer_uid
+
 router = APIRouter(tags=["donations"])
+
+
+@router.get("/my/donations")
+async def my_donations(
+    request: Request,
+    limit: int = Query(default=30, ge=1, le=200),
+) -> dict[str, Any]:
+    """세션에 연결된 스트리머의 후원만 조회 (브라우저 쿠키)."""
+    deps = request.app.state.deps
+    streamer_uid = get_streamer_uid(request, deps.streamer_repo)
+    if not streamer_uid:
+        raise HTTPException(401, "연동 세션이 없습니다. 치지직 연결 후 이용하세요.")
+    streamer = deps.streamer_repo.get(streamer_uid)
+    if not streamer or not streamer.has_token:
+        raise HTTPException(403, "치지직 OAuth 연동이 필요합니다.")
+
+    items = deps.donation_repo.sqlite.list_recent(
+        limit=limit, offset=0, streamer_uid=streamer_uid
+    )
+    return {
+        "display_name": streamer.display_name,
+        "count": len(items),
+        "total": deps.donation_repo.sqlite.count(streamer_uid=streamer_uid),
+        "donations": items,
+    }
 
 
 @router.get("/donations")

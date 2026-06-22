@@ -119,12 +119,14 @@ class StreamerService:
         return None
 
     def bridge_statuses(self) -> list[dict[str, Any]]:
+        repo_by_uid = {s.uid: s for s in self._repo.list_all()}
         status = self._bridge.get_status()
         if not status:
             return [
                 {
                     "streamer_uid": s.uid,
                     "display_name": s.display_name,
+                    "mc_username": s.resolve_mc_username(),
                     "chzzk_channel_id": s.chzzk_channel_id,
                     "has_token": s.has_token,
                     "listener_status": "bridge_unreachable",
@@ -133,4 +135,11 @@ class StreamerService:
                 }
                 for s in self._repo.list_all()
             ]
-        return status.get("streamers") or []
+        rows: list[dict[str, Any]] = []
+        for row in status.get("streamers") or []:
+            merged = dict(row)
+            streamer = repo_by_uid.get(merged.get("streamer_uid", ""))
+            if streamer:
+                merged["mc_username"] = streamer.resolve_mc_username()
+            rows.append(merged)
+        return rows

@@ -95,6 +95,7 @@ class IngestionService:
                 {
                     "streamer_uid": streamer.uid,
                     "display_name": streamer.display_name,
+                    "mc_username": streamer.resolve_mc_username(),
                     "chzzk_channel_id": streamer.chzzk_channel_id,
                     "has_token": streamer.has_token,
                     "listener_status": listener.status if listener else "not_started",

@@ -21,9 +21,12 @@ class PortalSettings:
     mc_log_path: str
     mc_log_scan_lines: int
     mc_log_max_lines: int
+    session_secret: str
 
     @classmethod
     def from_env(cls) -> PortalSettings:
+        steam_secret = os.getenv("STEAM_API_SECRET", "")
+        session_secret = os.getenv("SESSION_SECRET") or steam_secret or "dev-change-session-secret"
         return cls(
             shared=SharedSettings.from_env(),
             port=int(os.getenv("PORT", "3000")),
@@ -39,6 +42,7 @@ class PortalSettings:
             ),
             mc_log_scan_lines=int(os.getenv("MC_LOG_SCAN_LINES", "2000")),
             mc_log_max_lines=int(os.getenv("MC_LOG_MAX_LINES", "80")),
+            session_secret=session_secret,
         )
 
     @property

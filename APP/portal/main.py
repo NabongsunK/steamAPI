@@ -6,6 +6,7 @@ import logging
 
 import uvicorn
 from fastapi import FastAPI
+from starlette.middleware.sessions import SessionMiddleware
 
 from portal.config import PortalSettings
 from portal.deps import PortalDeps, build_deps
@@ -21,6 +22,11 @@ logger = logging.getLogger("portal")
 def create_app(deps: PortalDeps | None = None) -> FastAPI:
     deps = deps or build_deps()
     app = FastAPI(title="Chzzk Donation Portal (multi-streamer)")
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=deps.settings.session_secret,
+        same_site="lax",
+    )
     app.state.deps = deps
 
     app.include_router(public.router)

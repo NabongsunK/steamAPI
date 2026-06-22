@@ -19,7 +19,8 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
         rows += f"""
         <tr>
           <td><code>{uid}</code></td>
-          <td>{s["display_name"]}</td>
+          <td>{html.escape(s["display_name"])}</td>
+          <td><code>{html.escape(s.get("mc_username") or "—")}</code></td>
           <td>{s["listener_status"]}</td>
           <td>{'✓' if s["has_token"] else '—'}</td>
           <td><a href="{auth}">OAuth</a></td>
@@ -31,7 +32,7 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
         </tr>"""
 
     if not rows:
-        rows = '<tr><td colspan="7">등록된 스트리머 없음</td></tr>'
+        rows = '<tr><td colspan="8">등록된 스트리머 없음</td></tr>'
 
     redirect_uri = deps.settings.redirect_uri
     redirect_ok = deps.settings.redirect_uri_ok
@@ -71,7 +72,7 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
     <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '확인 필요'}</span></p>
   <p>Bridge: <code>{deps.settings.bridge_url}</code></p>
   <table>
-    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>삭제</th></tr>
+    <tr><th>uid</th><th>이름</th><th>마크 닉</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>삭제</th></tr>
     {rows}
   </table>
   <p><a href="/status">/status</a> · <a href="/streamers">/streamers</a> · <a href="/donations">/donations</a></p>

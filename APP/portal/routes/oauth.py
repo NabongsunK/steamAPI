@@ -19,4 +19,4 @@ async def auth_callback(
     state: str | None = None,
     error: str | None = None,
 ):
-    return await request.app.state.deps.oauth_service.handle_callback(code, state, error)
+    return await request.app.state.deps.oauth_service.handle_callback(request, code, state, error)
