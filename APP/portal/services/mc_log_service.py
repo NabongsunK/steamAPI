@@ -19,28 +19,21 @@ class McLogService:
         self._scan_lines = max(100, scan_lines)
         self._max_lines = max(10, max_lines)
 
-    @property
-    def log_path(self) -> str:
-        return str(self._path) if self._path else ""
-
     def read_donation_logs(self, *, all_lines: bool = False) -> dict:
         if not self._path:
             return {
                 "configured": False,
-                "path": "",
                 "exists": False,
                 "lines": [],
-                "message": "MC_LOG_PATH 미설정",
+                "message": "로그 경로가 설정되지 않았습니다",
             }
 
-        path_str = str(self._path)
         if not self._path.is_file():
             return {
                 "configured": True,
-                "path": path_str,
                 "exists": False,
                 "lines": [],
-                "message": f"로그 파일 없음: {path_str}",
+                "message": "로그 파일을 찾을 수 없습니다",
             }
 
         raw = self._tail_text(self._path, self._scan_lines)
@@ -52,7 +45,6 @@ class McLogService:
 
         return {
             "configured": True,
-            "path": path_str,
             "exists": True,
             "filtered": not all_lines,
             "lines": lines,

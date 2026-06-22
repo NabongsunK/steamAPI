@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
@@ -15,7 +16,6 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
     for s in streamers:
         uid = s["streamer_uid"]
         auth = f'/auth/chzzk?uid={uid}'
-        reset = f'/streamers/{uid}/auth/reset'
         rows += f"""
         <tr>
           <td><code>{uid}</code></td>
@@ -24,7 +24,11 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
           <td>{'✓' if s["has_token"] else '—'}</td>
           <td><a href="{auth}">OAuth</a></td>
           <td><a href="/donations?streamer_uid={uid}">후원</a></td>
-          <td><code>POST {reset}</code></td>
+          <td>
+            <button type="button" class="btn btn-warn btn-reset-auth"
+                    data-uid="{uid}" data-name="{html.escape(s['display_name'], quote=True)}"
+                    {'disabled' if not s['has_token'] else ''}>인증 해제</button>
+          </td>
         </tr>"""
 
     if not rows:
@@ -32,7 +36,6 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
 
     redirect_uri = deps.settings.redirect_uri
     redirect_ok = deps.settings.redirect_uri_ok
-    mc_log_path = deps.settings.mc_log_path
 
     return f"""
 <!DOCTYPE html>
@@ -57,6 +60,9 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
       white-space: pre-wrap; word-break: break-all; margin: 0;
     }}
     button.btn {{ padding: 0.35rem 0.75rem; cursor: pointer; }}
+    button.btn-warn {{ background: #fff3e0; border: 1px solid #e65100; color: #bf360c; border-radius: 4px; }}
+    button.btn-warn:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+    button.btn-warn:not(:disabled):hover {{ background: #ffe0b2; }}
   </style>
 </head>
 <body>
@@ -66,14 +72,14 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
     <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '확인 필요'}</span></p>
   <p>Bridge: <code>{deps.settings.bridge_url}</code></p>
   <table>
-    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>초기화</th></tr>
+    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>인증</th></tr>
     {rows}
   </table>
   <p><a href="/status">/status</a> · <a href="/streamers">/streamers</a> · <a href="/donations">/donations</a></p>
 
   <section class="log-panel">
     <h2>마크 서버 로그 (후원·NR-Donation)</h2>
-    <p id="mc-log-meta">경로: <code>{mc_log_path}</code> · 로딩 중…</p>
+    <p id="mc-log-meta">로딩 중…</p>
     <div class="log-toolbar">
       <button type="button" class="btn" id="mc-log-refresh">새로고침</button>
       <label><input type="checkbox" id="mc-log-all" /> 필터 없이 전체 tail</label>
@@ -83,6 +89,31 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
   </section>
 
   <script>
+    document.querySelectorAll('.btn-reset-auth').forEach((btn) => {{
+      btn.addEventListener('click', async () => {{
+        const uid = btn.dataset.uid;
+        const name = btn.dataset.name || uid;
+        if (!confirm('「' + name + '」 치지직 OAuth 인증을 해제할까요?\\n다시 연동하려면 OAuth 링크로 로그인해야 합니다.')) {{
+          return;
+        }}
+        btn.disabled = true;
+        try {{
+          const res = await fetch('/streamers/' + encodeURIComponent(uid) + '/auth/reset', {{
+            method: 'POST',
+          }});
+          const data = await res.json().catch(() => ({{}}));
+          if (!res.ok) {{
+            throw new Error(data.detail || res.statusText || '요청 실패');
+          }}
+          alert(data.message || '인증이 해제되었습니다.');
+          location.reload();
+        }} catch (e) {{
+          alert('인증 해제 실패: ' + e.message);
+          btn.disabled = false;
+        }}
+      }});
+    }});
+
     const box = document.getElementById('mc-log-box');
     const meta = document.getElementById('mc-log-meta');
     const refreshBtn = document.getElementById('mc-log-refresh');
@@ -95,11 +126,10 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
       try {{
         const res = await fetch('/admin/mc-logs?all=' + all);
         const data = await res.json();
-        const path = data.path || '(미설정)';
         const count = data.line_count ?? 0;
         const filtered = data.filtered ? '후원 관련만' : '전체 tail';
-        let status = data.exists ? filtered + ' · ' + count + '줄' : (data.message || '파일 없음');
-        meta.textContent = '경로: ' + path + ' · ' + status;
+        const status = data.exists ? filtered + ' · ' + count + '줄' : (data.message || '로그 없음');
+        meta.textContent = status;
         if (!data.lines || data.lines.length === 0) {{
           box.textContent = data.message || '(표시할 로그 없음)';
         }} else {{
@@ -160,7 +190,6 @@ async def status(request: Request) -> dict[str, Any]:
             "redirect_uri_ok": deps.settings.redirect_uri_ok,
             "storage": bridge_status.get("storage"),
             "forward_enabled": bridge_status.get("forward_enabled"),
-            "mc_log_path": deps.settings.mc_log_path,
         }
     return {
         "portal": "ok",
@@ -169,7 +198,6 @@ async def status(request: Request) -> dict[str, Any]:
         "redirect_uri": deps.settings.redirect_uri,
         "redirect_uri_ok": deps.settings.redirect_uri_ok,
         "streamers": deps.streamer_service.bridge_statuses(),
-        "mc_log_path": deps.settings.mc_log_path,
     }
 
 
