@@ -12,15 +12,21 @@ router = APIRouter(tags=["streamers"])
 
 class StreamerCreateBody(BaseModel):
     display_name: str = Field(min_length=1, max_length=100)
+    mc_username: str = Field(default="", max_length=100)
+
+
+class McUsernameBody(BaseModel):
+    mc_username: str = Field(min_length=1, max_length=100)
 
 
 @router.post("/streamers")
 async def create_streamer(request: Request, body: StreamerCreateBody) -> dict[str, Any]:
     deps = request.app.state.deps
-    streamer = deps.streamer_service.create(body.display_name)
+    streamer = deps.streamer_service.create(body.display_name, mc_username=body.mc_username)
     return {
         "streamer_uid": streamer.uid,
         "display_name": streamer.display_name,
+        "mc_username": streamer.resolve_mc_username(),
         "oauth_url": f"/auth/chzzk?uid={streamer.uid}",
         "message": "OAuth URL로 스트리머 본인 계정 로그인",
     }
@@ -43,10 +49,26 @@ async def get_streamer(request: Request, streamer_uid: str) -> dict[str, Any]:
     return {
         "streamer_uid": streamer.uid,
         "display_name": streamer.display_name,
+        "mc_username": streamer.resolve_mc_username(),
         "chzzk_channel_id": streamer.chzzk_channel_id,
         "has_token": streamer.has_token,
         "listener": status,
         "oauth_url": f"/auth/chzzk?uid={streamer.uid}",
+    }
+
+
+@router.patch("/streamers/{streamer_uid}/mc-username")
+async def patch_mc_username(
+    request: Request, streamer_uid: str, body: McUsernameBody
+) -> dict[str, Any]:
+    deps = request.app.state.deps
+    if not deps.streamer_service.get(streamer_uid):
+        raise HTTPException(404, "스트리머 없음")
+    deps.streamer_repo.update_mc_username(streamer_uid, body.mc_username)
+    streamer = deps.streamer_service.get(streamer_uid)
+    return {
+        "streamer_uid": streamer_uid,
+        "mc_username": streamer.resolve_mc_username() if streamer else body.mc_username,
     }
 
 

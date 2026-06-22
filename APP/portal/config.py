@@ -16,6 +16,8 @@ class PortalSettings:
     bridge_url: str
     oauth_state_file: str
     oauth_state_ttl_sec: int
+    steam_api_secret: str
+    nr_donation_ws_url: str
 
     @classmethod
     def from_env(cls) -> PortalSettings:
@@ -26,6 +28,8 @@ class PortalSettings:
             bridge_url=os.getenv("BRIDGE_URL", "http://127.0.0.1:3001").rstrip("/"),
             oauth_state_file=os.getenv("OAUTH_STATE_FILE", "data/oauth_states.json"),
             oauth_state_ttl_sec=int(os.getenv("OAUTH_STATE_TTL_SEC", "600")),
+            steam_api_secret=os.getenv("STEAM_API_SECRET", ""),
+            nr_donation_ws_url=os.getenv("NR_DONATION_WS_URL", "ws://127.0.0.1:8888"),
         )
 
     @property

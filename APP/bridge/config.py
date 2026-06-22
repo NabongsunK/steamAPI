@@ -21,7 +21,7 @@ class BridgeSettings:
         return cls(
             shared=SharedSettings.from_env(),
             port=int(os.getenv("BRIDGE_PORT", "3001")),
-            steam_api_url=os.getenv("STEAM_API_URL", "http://127.0.0.1:4000").rstrip("/"),
+            steam_api_url=os.getenv("STEAM_API_URL", "http://127.0.0.1:3000").rstrip("/"),
             steam_api_secret=os.getenv("STEAM_API_SECRET", ""),
             forward_enabled=os.getenv("BRIDGE_FORWARD_ENABLED", "false").lower() in ("1", "true", "yes"),
         )

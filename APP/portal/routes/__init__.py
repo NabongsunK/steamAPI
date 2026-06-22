@@ -1,3 +1,3 @@
-from portal.routes import admin, donations, oauth, public, streamers
+from portal.routes import admin, donations, events, oauth, public, streamers
 
-__all__ = ["admin", "donations", "oauth", "public", "streamers"]
+__all__ = ["admin", "donations", "events", "oauth", "public", "streamers"]

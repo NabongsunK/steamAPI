@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from portal.config import PortalSettings
 from portal.deps import PortalDeps, build_deps
-from portal.routes import admin, donations, oauth, public, streamers
+from portal.routes import admin, donations, events, oauth, public, streamers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +27,7 @@ def create_app(deps: PortalDeps | None = None) -> FastAPI:
     app.include_router(oauth.router)
     app.include_router(streamers.router)
     app.include_router(donations.router)
+    app.include_router(events.router)
     app.include_router(admin.router)
 
     @app.on_event("startup")
@@ -40,9 +41,10 @@ def create_app(deps: PortalDeps | None = None) -> FastAPI:
                 deps.settings.redirect_uri,
             )
         logger.info(
-            "portal 기동 (port=%s, bridge=%s)",
+            "portal 기동 (port=%s, bridge=%s, nr_ws=%s)",
             deps.settings.port,
             deps.settings.bridge_url,
+            deps.nr_donation_adapter.enabled,
         )
 
     return app

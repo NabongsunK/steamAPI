@@ -28,16 +28,23 @@ class StreamerService:
         self._repo = streamer_repo
         self._bridge = bridge_client
 
-    def connect_by_display_name(self, display_name: str) -> Streamer:
+    def connect_by_display_name(self, display_name: str, mc_username: str = "") -> Streamer:
         name = display_name.strip()
         if not name:
             raise HTTPException(400, "닉네임을 입력하세요.")
-        streamer, _created = self._repo.get_or_create(name)
+        streamer, created = self._repo.get_or_create(name)
+        mc = mc_username.strip()
+        if mc and mc != streamer.mc_username:
+            self._repo.update_mc_username(streamer.uid, mc)
+            streamer = self._repo.get(streamer.uid) or streamer
+        elif created and not streamer.mc_username:
+            self._repo.update_mc_username(streamer.uid, name)
+            streamer = self._repo.get(streamer.uid) or streamer
         self._bridge.start_listener(streamer.uid)
         return streamer
 
-    def create(self, display_name: str) -> Streamer:
-        streamer = self._repo.create(display_name)
+    def create(self, display_name: str, *, mc_username: str = "") -> Streamer:
+        streamer = self._repo.create(display_name, mc_username=mc_username)
         self._bridge.start_listener(streamer.uid)
         return streamer
 

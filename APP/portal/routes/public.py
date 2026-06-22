@@ -69,7 +69,10 @@ def _streamer_landing_html(deps: PortalDeps, oauth_msg: str, oauth_uid: str) -> 
       <label for="display_name">치지직 닉네임 (표시 이름)</label>
       <input id="display_name" name="display_name" type="text" required maxlength="100"
              placeholder="예: 내방송닉네임" />
-      <p class="hint" style="margin-top:0.75rem">처음이면 등록되고, 같은 이름이면 기존 연결을 이어갑니다.</p>
+      <label for="mc_username" style="margin-top:0.75rem">마인크래프트 닉네임</label>
+      <input id="mc_username" name="mc_username" type="text" maxlength="100"
+             placeholder="서버 접속 닉네임 (비우면 위와 동일)" />
+      <p class="hint" style="margin-top:0.75rem">후원 이벤트는 이 마크 닉네임으로 전달됩니다. 접속 중이어야 합니다.</p>
       <p style="margin-top:1rem"><button class="btn" type="submit">치지직 연결하기</button></p>
     </form>
   </div>
@@ -101,7 +104,11 @@ async def index(
 
 
 @router.post("/connect")
-async def streamer_connect(request: Request, display_name: str = Form(...)) -> RedirectResponse:
+async def streamer_connect(
+    request: Request,
+    display_name: str = Form(...),
+    mc_username: str = Form(default=""),
+) -> RedirectResponse:
     deps = _deps(request)
-    streamer = deps.streamer_service.connect_by_display_name(display_name)
+    streamer = deps.streamer_service.connect_by_display_name(display_name, mc_username)
     return RedirectResponse(f"/auth/chzzk?uid={streamer.uid}", status_code=303)

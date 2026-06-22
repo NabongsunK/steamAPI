@@ -14,9 +14,14 @@ from typing import Any
 class Streamer:
     uid: str
     display_name: str
+    mc_username: str
     chzzk_channel_id: str
     has_token: bool
     created_at: str
+
+    def resolve_mc_username(self) -> str:
+        """NR-Donation WS 세션 id (마크 닉네임)."""
+        return (self.mc_username or self.display_name).strip()
 
 
 class StreamerRepo:
@@ -50,13 +55,20 @@ class StreamerRepo:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_streamers_channel ON streamers(chzzk_channel_id)"
             )
+            self._ensure_column(conn, "mc_username", "TEXT NOT NULL DEFAULT ''")
             conn.commit()
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, name: str, definition: str) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(streamers)").fetchall()}
+        if name not in cols:
+            conn.execute(f"ALTER TABLE streamers ADD COLUMN {name} {definition}")
 
     def get_by_display_name(self, display_name: str) -> Streamer | None:
         name = display_name.strip()
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT uid, display_name, chzzk_channel_id, created_at, access_token "
+                "SELECT uid, display_name, mc_username, chzzk_channel_id, created_at, access_token "
                 "FROM streamers WHERE display_name = ?",
                 (name,),
             ).fetchone()
@@ -69,28 +81,42 @@ class StreamerRepo:
             return existing, False
         return self.create(display_name), True
 
-    def create(self, display_name: str) -> Streamer:
+    def create(self, display_name: str, *, mc_username: str = "") -> Streamer:
         name = display_name.strip()
         if not name:
             raise ValueError("display_name 필요")
+        mc = (mc_username or name).strip()
         uid = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
-                "INSERT INTO streamers (uid, display_name) VALUES (?, ?)",
-                (uid, name),
+                "INSERT INTO streamers (uid, display_name, mc_username) VALUES (?, ?, ?)",
+                (uid, name, mc),
             )
             conn.commit()
             row = conn.execute(
-                "SELECT uid, display_name, chzzk_channel_id, created_at, access_token "
+                "SELECT uid, display_name, mc_username, chzzk_channel_id, created_at, access_token "
                 "FROM streamers WHERE uid = ?",
                 (uid,),
             ).fetchone()
         return self._row_to_streamer(row)
 
+    def update_mc_username(self, uid: str, mc_username: str) -> None:
+        mc = mc_username.strip()
+        if not mc:
+            raise ValueError("mc_username 필요")
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE streamers SET mc_username = ? WHERE uid = ?",
+                (mc, uid),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"streamer 없음: {uid}")
+            conn.commit()
+
     def get(self, uid: str) -> Streamer | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT uid, display_name, chzzk_channel_id, created_at, access_token "
+                "SELECT uid, display_name, mc_username, chzzk_channel_id, created_at, access_token "
                 "FROM streamers WHERE uid = ?",
                 (uid,),
             ).fetchone()
@@ -99,7 +125,7 @@ class StreamerRepo:
     def list_all(self) -> list[Streamer]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT uid, display_name, chzzk_channel_id, created_at, access_token "
+                "SELECT uid, display_name, mc_username, chzzk_channel_id, created_at, access_token "
                 "FROM streamers ORDER BY created_at ASC"
             ).fetchall()
         return [self._row_to_streamer(row) for row in rows]
@@ -206,9 +232,13 @@ class StreamerRepo:
 
     @staticmethod
     def _row_to_streamer(row: sqlite3.Row) -> Streamer:
+        mc_username = ""
+        if "mc_username" in row.keys():
+            mc_username = row["mc_username"] or ""
         return Streamer(
             uid=row["uid"],
             display_name=row["display_name"],
+            mc_username=mc_username,
             chzzk_channel_id=row["chzzk_channel_id"] or "",
             has_token=bool(row["access_token"]),
             created_at=row["created_at"],
