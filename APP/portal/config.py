@@ -18,6 +18,9 @@ class PortalSettings:
     oauth_state_ttl_sec: int
     steam_api_secret: str
     nr_donation_ws_url: str
+    mc_log_path: str
+    mc_log_scan_lines: int
+    mc_log_max_lines: int
 
     @classmethod
     def from_env(cls) -> PortalSettings:
@@ -30,6 +33,12 @@ class PortalSettings:
             oauth_state_ttl_sec=int(os.getenv("OAUTH_STATE_TTL_SEC", "600")),
             steam_api_secret=os.getenv("STEAM_API_SECRET", ""),
             nr_donation_ws_url=os.getenv("NR_DONATION_WS_URL", "ws://127.0.0.1:8888"),
+            mc_log_path=os.getenv(
+                "MC_LOG_PATH",
+                os.path.expanduser("~/minecraft-server/data/logs/latest.log"),
+            ),
+            mc_log_scan_lines=int(os.getenv("MC_LOG_SCAN_LINES", "2000")),
+            mc_log_max_lines=int(os.getenv("MC_LOG_MAX_LINES", "80")),
         )
 
     @property

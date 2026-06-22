@@ -12,6 +12,7 @@ from portal.services.bridge_client import BridgeClient
 from portal.services.event_service import EventService
 from portal.services.nr_donation_adapter import NrDonationAdapter
 from portal.services.oauth_service import OAuthService
+from portal.services.mc_log_service import McLogService
 from portal.services.streamer_service import StreamerService
 
 
@@ -25,6 +26,7 @@ class PortalDeps:
     streamer_service: StreamerService
     nr_donation_adapter: NrDonationAdapter
     event_service: EventService
+    mc_log_service: McLogService
 
 
 def build_deps(settings: PortalSettings | None = None) -> PortalDeps:
@@ -53,6 +55,11 @@ def build_deps(settings: PortalSettings | None = None) -> PortalDeps:
         streamer_repo=streamer_repo,
         nr_adapter=nr_donation_adapter,
     )
+    mc_log_service = McLogService(
+        log_path=settings.mc_log_path,
+        scan_lines=settings.mc_log_scan_lines,
+        max_lines=settings.mc_log_max_lines,
+    )
 
     return PortalDeps(
         settings=settings,
@@ -63,4 +70,5 @@ def build_deps(settings: PortalSettings | None = None) -> PortalDeps:
         streamer_service=streamer_service,
         nr_donation_adapter=nr_donation_adapter,
         event_service=event_service,
+        mc_log_service=mc_log_service,
     )
