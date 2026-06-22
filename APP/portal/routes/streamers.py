@@ -73,9 +73,8 @@ async def patch_mc_username(
 
 
 @router.delete("/streamers/{streamer_uid}")
-async def delete_streamer(request: Request, streamer_uid: str) -> dict[str, str]:
-    request.app.state.deps.streamer_service.delete(streamer_uid)
-    return {"message": f"삭제됨: {streamer_uid}"}
+async def delete_streamer(request: Request, streamer_uid: str) -> dict[str, Any]:
+    return request.app.state.deps.streamer_service.delete(streamer_uid)
 
 
 @router.post("/streamers/{streamer_uid}/listener/restart")

@@ -14,9 +14,15 @@ def _deps(request: Request) -> PortalDeps:
     return request.app.state.deps
 
 
-def _streamer_landing_html(deps: PortalDeps, oauth_msg: str, oauth_uid: str) -> str:
+def _streamer_landing_html(deps: PortalDeps, oauth_msg: str, oauth_uid: str, error: str = "") -> str:
     banner = ""
     reconnect = ""
+    error_banner = ""
+    if error == "consent":
+        error_banner = """
+  <div class="card" style="border-left:4px solid #c00">
+    <p><strong>연결할 수 없습니다.</strong> 개인정보 수집·이용에 동의해 주세요.</p>
+  </div>"""
     if oauth_msg == "ok" and oauth_uid:
         st = deps.streamer_service.bridge_streamer_status(oauth_uid)
         name = st["display_name"] if st else "스트리머"
@@ -57,11 +63,25 @@ def _streamer_landing_html(deps: PortalDeps, oauth_msg: str, oauth_uid: str) -> 
             font-size: 1rem; }}
     .hint {{ color: #666; font-size: 0.9rem; }}
     ol {{ padding-left: 1.2rem; }}
+    .consent-box {{
+      margin-top: 1rem; padding: 0.85rem 1rem; background: #fff;
+      border: 1px solid #ddd; border-radius: 6px; font-size: 0.9rem;
+    }}
+    .consent-box h3 {{ margin: 0 0 0.5rem; font-size: 0.95rem; }}
+    .consent-box ul {{ margin: 0.5rem 0 0.75rem; padding-left: 1.2rem; }}
+    .consent-box li {{ margin: 0.25rem 0; }}
+    .consent-label {{
+      display: flex; gap: 0.5rem; align-items: flex-start;
+      font-weight: 600; cursor: pointer; margin: 0;
+    }}
+    .consent-label input {{ margin-top: 0.2rem; flex-shrink: 0; }}
+    .btn:disabled {{ opacity: 0.45; cursor: not-allowed; }}
   </style>
 </head>
 <body>
   <h1>치지직 후원 연동</h1>
   <p>마인크래프트 서버와 연동하려면 치지직 계정을 연결하세요.</p>
+  {error_banner}
   {banner}
   {reconnect}
   <div class="card">
@@ -73,14 +93,42 @@ def _streamer_landing_html(deps: PortalDeps, oauth_msg: str, oauth_uid: str) -> 
       <input id="mc_username" name="mc_username" type="text" maxlength="100"
              placeholder="서버 접속 닉네임 (비우면 위와 동일)" />
       <p class="hint" style="margin-top:0.75rem">후원 이벤트는 이 마크 닉네임으로 전달됩니다. 접속 중이어야 합니다.</p>
-      <p style="margin-top:1rem"><button class="btn" type="submit">치지직 연결하기</button></p>
+
+      <div class="consent-box">
+        <h3>수집하는 정보</h3>
+        <p class="hint" style="margin:0">마인크래프트 후원 연동을 위해 아래 정보를 수집·이용합니다.</p>
+        <ul>
+          <li><strong>치지직 표시 닉네임</strong> — 스트리머 식별·연동 관리</li>
+          <li><strong>마인크래프트 닉네임</strong> — 후원 이벤트를 받을 인게임 캐릭터 지정</li>
+          <li><strong>치지직 OAuth 인증 정보</strong> — 치지직 로그인 시 발급되는 토큰 (후원 수신)</li>
+          <li><strong>치지직 채널 ID</strong> — 본인 채널 후원 구독</li>
+          <li><strong>후원 내역</strong> — 후원자 닉네임, 금액, 메시지 (마크 서버 전달·기록)</li>
+        </ul>
+        <p class="hint">이용 목적: 치지직 후원을 마인크래프트 서버로 연동<br>
+        보관: 연동 해제·삭제 시까지 (서버 DB에 저장)</p>
+        <label class="consent-label" for="consent">
+          <input id="consent" name="consent" type="checkbox" value="yes" required />
+          <span>위 내용을 확인했으며, 개인정보 수집·이용에 동의합니다.</span>
+        </label>
+      </div>
+
+      <p style="margin-top:1rem"><button id="connect-btn" class="btn" type="submit" disabled>치지직 연결하기</button></p>
     </form>
   </div>
   <ol class="hint">
-    <li>위 버튼 → 치지직 로그인</li>
+    <li>동의 후 버튼 → 치지직 로그인</li>
     <li>로그인 시 <strong>후원 조회</strong> 권한 허용</li>
     <li>본인 채널로 들어오는 후원이 연동됩니다</li>
   </ol>
+  <script>
+    const consent = document.getElementById('consent');
+    const connectBtn = document.getElementById('connect-btn');
+    if (consent && connectBtn) {{
+      const sync = () => {{ connectBtn.disabled = !consent.checked; }};
+      consent.addEventListener('change', sync);
+      sync();
+    }}
+  </script>
 </body>
 </html>
 """
@@ -94,13 +142,14 @@ async def index(
     error: str | None = None,
     oauth: str | None = None,
     uid: str | None = None,
+    connect_error: str | None = None,
 ):
     deps = _deps(request)
     if code and state:
         return await deps.oauth_service.handle_callback(code, state, error)
     if error:
         raise HTTPException(400, f"OAuth 실패: {error}")
-    return HTMLResponse(_streamer_landing_html(deps, oauth or "", uid or ""))
+    return HTMLResponse(_streamer_landing_html(deps, oauth or "", uid or "", connect_error or ""))
 
 
 @router.post("/connect")
@@ -108,7 +157,10 @@ async def streamer_connect(
     request: Request,
     display_name: str = Form(...),
     mc_username: str = Form(default=""),
+    consent: str | None = Form(default=None),
 ) -> RedirectResponse:
+    if consent != "yes":
+        return RedirectResponse("/?connect_error=consent", status_code=303)
     deps = _deps(request)
     streamer = deps.streamer_service.connect_by_display_name(display_name, mc_username)
     return RedirectResponse(f"/auth/chzzk?uid={streamer.uid}", status_code=303)

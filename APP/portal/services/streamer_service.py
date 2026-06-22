@@ -54,11 +54,20 @@ class StreamerService:
     def list_all(self) -> list[Streamer]:
         return self._repo.list_all()
 
-    def delete(self, uid: str) -> None:
-        if not self._repo.get(uid):
+    def delete(self, uid: str) -> dict[str, Any]:
+        streamer = self._repo.get(uid)
+        if not streamer:
             raise HTTPException(404, "스트리머 없음")
+
+        revoke = self._revoke_tokens_if_any(uid)
         self._bridge.stop_listener(uid)
         self._repo.delete(uid)
+
+        return {
+            "message": f"삭제됨: {streamer.display_name}",
+            "streamer_uid": uid,
+            **revoke,
+        }
 
     def reset_auth(self, streamer_uid: str) -> dict[str, Any]:
         streamer = self._repo.get(streamer_uid)
@@ -66,6 +75,17 @@ class StreamerService:
             raise HTTPException(404, "스트리머 없음")
 
         self._bridge.stop_listener(streamer_uid)
+        revoke = self._revoke_tokens_if_any(streamer_uid)
+        self._repo.clear_tokens(streamer_uid)
+        self._bridge.start_listener(streamer_uid)
+
+        return {
+            "message": f"OAuth 초기화 — /auth/chzzk?uid={streamer_uid} 로 다시 로그인",
+            "streamer_uid": streamer_uid,
+            **revoke,
+        }
+
+    def _revoke_tokens_if_any(self, streamer_uid: str) -> dict[str, Any]:
         tokens = self._repo.get_tokens(streamer_uid)
         shared = self._settings.shared
         revoked = False
@@ -83,12 +103,7 @@ class StreamerService:
             except Exception as exc:
                 revoke_error = str(exc)
 
-        self._repo.clear_tokens(streamer_uid)
-        self._bridge.start_listener(streamer_uid)
-
         return {
-            "message": f"OAuth 초기화 — /auth/chzzk?uid={streamer_uid} 로 다시 로그인",
-            "streamer_uid": streamer_uid,
             "token_revoked": revoked,
             "revoke_error": revoke_error,
             "sessions_before_reset": sessions_before,

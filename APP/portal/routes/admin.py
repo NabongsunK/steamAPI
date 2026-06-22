@@ -25,9 +25,8 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
           <td><a href="{auth}">OAuth</a></td>
           <td><a href="/donations?streamer_uid={uid}">후원</a></td>
           <td>
-            <button type="button" class="btn btn-warn btn-reset-auth"
-                    data-uid="{uid}" data-name="{html.escape(s['display_name'], quote=True)}"
-                    {'disabled' if not s['has_token'] else ''}>인증 해제</button>
+            <button type="button" class="btn btn-warn btn-delete-streamer"
+                    data-uid="{uid}" data-name="{html.escape(s['display_name'], quote=True)}">삭제</button>
           </td>
         </tr>"""
 
@@ -72,7 +71,7 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
     <span class="{'ok' if redirect_ok else 'warn'}">{'OK' if redirect_ok else '확인 필요'}</span></p>
   <p>Bridge: <code>{deps.settings.bridge_url}</code></p>
   <table>
-    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>인증</th></tr>
+    <tr><th>uid</th><th>이름</th><th>리스너</th><th>OAuth</th><th></th><th>후원</th><th>삭제</th></tr>
     {rows}
   </table>
   <p><a href="/status">/status</a> · <a href="/streamers">/streamers</a> · <a href="/donations">/donations</a></p>
@@ -89,26 +88,28 @@ def _admin_html(deps, streamers: list[dict[str, Any]]) -> str:
   </section>
 
   <script>
-    document.querySelectorAll('.btn-reset-auth').forEach((btn) => {{
+    document.querySelectorAll('.btn-delete-streamer').forEach((btn) => {{
       btn.addEventListener('click', async () => {{
         const uid = btn.dataset.uid;
         const name = btn.dataset.name || uid;
-        if (!confirm('「' + name + '」 치지직 OAuth 인증을 해제할까요?\\n다시 연동하려면 OAuth 링크로 로그인해야 합니다.')) {{
+        if (!confirm('「' + name + '」 스트리머를 삭제할까요?\\nDB에서 완전히 지워지며, 다시 연동하면 새 uid가 생깁니다.')) {{
           return;
         }}
         btn.disabled = true;
         try {{
-          const res = await fetch('/streamers/' + encodeURIComponent(uid) + '/auth/reset', {{
-            method: 'POST',
+          const res = await fetch('/streamers/' + encodeURIComponent(uid), {{
+            method: 'DELETE',
           }});
           const data = await res.json().catch(() => ({{}}));
           if (!res.ok) {{
-            throw new Error(data.detail || res.statusText || '요청 실패');
+            const detail = data.detail;
+            const msg = typeof detail === 'string' ? detail : res.statusText || '요청 실패';
+            throw new Error(msg);
           }}
-          alert(data.message || '인증이 해제되었습니다.');
+          alert(data.message || '삭제되었습니다.');
           location.reload();
         }} catch (e) {{
-          alert('인증 해제 실패: ' + e.message);
+          alert('삭제 실패: ' + e.message);
           btn.disabled = false;
         }}
       }});
