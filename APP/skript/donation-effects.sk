@@ -39,7 +39,7 @@ on DonationEvent:
     else if {_amount} >= 5000:
         set {_tnt} to 2
     else if {_amount} >= 1000:
-        set {_tnt} to 1
+        set {_tnt} to 30000
 
     loop {_tnt} times:
         set {_loc} to location (2 + loop-number * 0.5) meters above {_player}
