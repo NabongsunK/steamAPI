@@ -6,6 +6,7 @@
 **관련 문서**
 
 - [아키텍처 · 마이그레이션](docs/MIGRATION.md)
+- [마인크래프트 후원 효과 (Skript)](docs/MINECRAFT_SKRIPT.md)
 - [Session API](https://chzzk.gitbook.io/chzzk/chzzk-api/session)
 - [Authorization (OAuth)](https://chzzk.gitbook.io/chzzk/chzzk-api/authorization)
 
@@ -115,7 +116,11 @@ curl -X POST http://localhost:3000/listener/restart
 
 ```
 APP/
-├── docs/MIGRATION.md
+├── docs/
+│   ├── MIGRATION.md
+│   └── MINECRAFT_SKRIPT.md
+├── skript/
+│   └── donation-effects.sk   # plugins/Skript/scripts/ 로 복사
 ├── shared/          # repos, chzzk 클라이언트, 모델
 ├── portal/          # OAuth · admin (:3000)
 ├── bridge/          # WS 수신 · Redis/SQLite (:3001)
@@ -148,6 +153,12 @@ APP/
 
 - `redis-cli ping` → `PONG`
 - bridge 터미널 로그 확인
+
+### 후원은 오는데 마크에서 아무 일도 없음
+
+- NR-Donation WS 로그 확인 (`open` / `user//event//donation`)
+- 스트리머 **접속** + `mc_username` 일치
+- **Skript + Skript-Reflect** 설치 → [`docs/MINECRAFT_SKRIPT.md`](docs/MINECRAFT_SKRIPT.md) · [`skript/donation-effects.sk`](skript/donation-effects.sk)
 
 ---
 

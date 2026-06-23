@@ -1,0 +1,44 @@
+# steamAPI + NR-Donation 후원 효과 (TNT)
+# 필요: Skript, Skript-Reflect, NR-Donation 플러그인
+# 설치: plugins/Skript/scripts/ 에 복사 후  →  sk reload donation-effects
+#
+# DonationEvent (net.teujaem.nrDonation.event.DonationEvent)
+#   platform  — chzzk
+#   sender    — 후원자 닉
+#   amount    — 금액 (원)
+#   message   — 후원 메시지
+#   player    — 스트리머 (mc_username, 접속 중)
+
+on event "net.teujaem.nrDonation.event.DonationEvent":
+    set {_platform} to event-value("getPlatform")
+    set {_sender} to event-value("getSender")
+    set {_amount} to event-value("getAmount")
+    set {_message} to event-value("getMessage")
+    set {_player} to event-value("getPlayer")
+
+    if {_player} is not set:
+        stop
+
+  # --- 채팅 알림 ---
+    broadcast "&8[&6후원&8/&e%{_platform}%&8] &f%{_sender}% &7→ &a%{_player}% &6%{_amount}%&f원"
+    if {_message} is set:
+        if {_message} is not "":
+            if {_message} is not "null":
+                broadcast "&7\"%{_message}%\""
+
+  # --- 금액별 TNT (개수·금액은 자유롭게 수정) ---
+    if {_amount} >= 50000:
+        send title "&c&l대형 후원!" with subtitle "&e%{_sender}% &f%{_amount}%원" to {_player} for 3 seconds
+        spawnDonationTnt({_player}, 5)
+    else if {_amount} >= 10000:
+        spawnDonationTnt({_player}, 3)
+    else if {_amount} >= 5000:
+        spawnDonationTnt({_player}, 2)
+    else if {_amount} >= 1000:
+        spawnDonationTnt({_player}, 1)
+
+function spawnDonationTnt(p: player, count: number):
+    loop {_count} times:
+        set {_loc} to location (2 + loop-number * 0.5) meters above {_p}
+        spawn a primed tnt at {_loc}
+        set fuse ticks of last spawned entity to 60
