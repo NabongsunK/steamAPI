@@ -53,11 +53,24 @@ NR_DONATION_WS_URL=ws://127.0.0.1:8888
 
 ## Skript 설치
 
-1. [Skript](https://github.com/SkriptLang/Skript/releases) jar → `plugins/`
-2. [Skript-Reflect](https://github.com/SkriptLang/skript-reflect/releases) jar → `plugins/`
-3. 서버 재시작
-4. `plugins/Skript/scripts/` 에 예제 스크립트 복사 (아래)
-5. 게임 안 또는 콘솔: `sk reload donation-effects`
+1. 서버 **plugins** 폴더 확인:
+   ```bash
+   ls ~/minecraft-server/data/plugins/
+   ```
+2. **Skript** jar가 없으면 [Skript 릴리스](https://github.com/SkriptLang/Skript/releases)에서 Paper용 jar 받기  
+   → `~/minecraft-server/data/plugins/Skript.jar` (이름은 아무거나 가능)
+3. **Skript-Reflect** jar도 같은 폴더에  
+   → [skript-reflect 릴리스](https://github.com/SkriptLang/skript-reflect/releases)
+4. MC 서버 **재시작** (또는 `docker compose restart mc`)
+5. 스크립트 폴더가 없으면 직접 만들기:
+   ```bash
+   mkdir -p ~/minecraft-server/data/plugins/Skript/scripts
+   cp ~/steamAPI/APP/skript/donation-effects.sk \
+      ~/minecraft-server/data/plugins/Skript/scripts/
+   ```
+6. 게임 안 또는 콘솔: `sk reload donation-effects`
+
+> `cp: .../Skript/scripts does not exist` → **Skript 미설치**이거나 **한 번도 서버를 안 켠** 상태입니다. 위 2~5단계 순서대로 진행하세요.
 
 예제 파일: [`../skript/donation-effects.sk`](../skript/donation-effects.sk)
 
@@ -77,15 +90,18 @@ NR_DONATION_WS_URL=ws://127.0.0.1:8888
 
 ---
 
-## Skript 예제 (Skript-Reflect)
+## Skript 예제 (Skript-Reflect 2.6+)
 
 ```skript
-on event "net.teujaem.nrDonation.event.DonationEvent":
-    set {_platform} to event-value("getPlatform")
-    set {_sender} to event-value("getSender")
-    set {_amount} to event-value("getAmount")
-    set {_message} to event-value("getMessage")
-    set {_player} to event-value("getPlayer")
+import:
+  net.teujaem.nrDonation.event.DonationEvent
+
+on DonationEvent:
+    set {_platform} to event.getPlatform()
+    set {_sender} to event.getSender()
+    set {_amount} to event.getAmount()
+    set {_message} to event.getMessage()
+    set {_player} to event.getPlayer()
 
     if {_player} is not set:
         stop
@@ -97,10 +113,13 @@ on event "net.teujaem.nrDonation.event.DonationEvent":
 
     if {_amount} >= 10000:
         loop 3 times:
-            spawn a primed tnt at location 2 meters above {_player}
+            spawn primed tnt at location 2 meters above {_player}
     else if {_amount} >= 1000:
-        spawn a primed tnt at location 2 meters above {_player}
+        spawn primed tnt at location 2 meters above {_player}
 ```
+
+> `on event "패키지.클래스"` 는 **구 skript-mirror** 문법입니다.  
+> Skript-Reflect 2.6 은 위처럼 **`import` + `on DonationEvent`** 를 씁니다.
 
 금액 구간·TNT 개수는 [`skript/donation-effects.sk`](../skript/donation-effects.sk) 에서 수정하세요.
 
@@ -122,7 +141,7 @@ admin `/admin` 의 **마크 서버 로그** 패널으로 WS 수신 여부를 볼
 
 | 증상 | 확인 |
 |------|------|
-| WS 로그는 있는데 Skript 무반응 | Skript-Reflect 설치 · `sk reload` |
+| WS 로그는 있는데 Skript 무반응 | `latest.log` 에 `Can't understand ... on event` → **import 문법**으로 수정 후 `sk reload donation-effects` |
 | WS 로그 자체가 없음 | Portal `NR_DONATION_WS_URL`, Docker 8888 |
 | 이벤트가 안 옴 | 스트리머 **오프라인** 또는 `mc_username` 불일치 |
 | `event-value` 오류 | Skript / Skript-Reflect 버전, 클래스명 오타 |
