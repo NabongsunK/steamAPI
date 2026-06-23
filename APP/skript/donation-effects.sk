@@ -27,7 +27,7 @@ on DonationEvent:
     if {_message} is set:
         if {_message} is not "":
             if {_message} is not "null":
-                broadcast "&7\"%{_message}%\""
+                broadcast "&7메시지: %{_message}%"
 
   # --- 금액별 TNT (개수·금액은 자유롭게 수정) ---
     set {_tnt} to 0

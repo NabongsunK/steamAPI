@@ -109,7 +109,7 @@ on DonationEvent:
     broadcast "&6[후원/&e%{_platform}%&6] &f%{_sender}% &7→ &e%{_player}% &6%{_amount}%원"
     if {_message} is set:
         if {_message} is not "":
-            broadcast "&7\"%{_message}%\""
+            broadcast "&7메시지: %{_message}%"
 
     if {_amount} >= 10000:
         loop 3 times:
