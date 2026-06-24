@@ -26,7 +26,7 @@
 ## 설치
 
 ```bash
-cd APP
+cd steamAPI/APP
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -159,6 +159,15 @@ APP/
 - NR-Donation WS 로그 확인 (`open` / `user//event//donation`)
 - 스트리머 **접속** + `mc_username` 일치
 - **Skript + Skript-Reflect** 설치 → [`docs/MINECRAFT_SKRIPT.md`](docs/MINECRAFT_SKRIPT.md) · [`skript/donation-effects.sk`](skript/donation-effects.sk)
+
+스크립트 수정 후 Mac Mini에 반영:
+
+```bash
+cd ~/steamAPI && git pull
+cp ~/steamAPI/APP/skript/donation-effects.sk \
+   ~/minecraft-server/data/plugins/Skript/scripts/
+docker exec -i minecraft rcon-cli sk reload donation-effects
+```
 
 ---
 

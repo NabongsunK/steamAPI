@@ -68,7 +68,19 @@ NR_DONATION_WS_URL=ws://127.0.0.1:8888
    cp ~/steamAPI/APP/skript/donation-effects.sk \
       ~/minecraft-server/data/plugins/Skript/scripts/
    ```
-6. 게임 안 또는 콘솔: `sk reload donation-effects`
+6. 스크립트 반영 및 reload (Mac Mini, Docker):
+
+   ```bash
+   cd ~/steamAPI && git pull
+   cp ~/steamAPI/APP/skript/donation-effects.sk \
+      ~/minecraft-server/data/plugins/Skript/scripts/
+   docker exec -i minecraft rcon-cli sk reload donation-effects
+   ```
+
+   > `sk` 는 **Mac 터미널 명령이 아닙니다.** 마크 서버 콘솔(또는 위 `rcon-cli`)에서만 실행합니다.  
+   > `docker attach` 대신 `rcon-cli` 사용을 권장합니다.
+
+   게임 안(OP)에서도 가능: `/sk reload donation-effects`
 
 > `cp: .../Skript/scripts does not exist` → **Skript 미설치**이거나 **한 번도 서버를 안 켠** 상태입니다. 위 2~5단계 순서대로 진행하세요.
 
